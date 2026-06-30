@@ -79,6 +79,13 @@ type CanvasSize = {
   height: number;
 };
 
+type NormalizedBounds = {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+};
+
 type StrokePoint = Point & {
   pressure: number;
   tiltX: number;
@@ -119,11 +126,29 @@ type ApiSettings = {
   maxCompletionTokens: number;
 };
 
-type CollaborationStroke = {
-  tool: Exclude<Tool, "eraser">;
+type CollaborationMarkKind =
+  | "stroke"
+  | "line"
+  | "curve"
+  | "ellipse"
+  | "rectangle"
+  | "dot"
+  | "hatch"
+  | "highlight"
+  | "smudge"
+  | "star";
+
+type DrawingTool = Exclude<Tool, "eraser">;
+
+type CollaborationMark = {
+  kind: CollaborationMarkKind;
+  tool: DrawingTool;
   color: string;
   width: number;
   alpha: number;
+  fill: boolean;
+  rotation: number;
+  spacing: number;
   points: Point[];
 };
 
@@ -135,18 +160,23 @@ type DrawingToolCall = {
 
 type DrawingToolArguments = {
   note: string;
-  strokes: CollaborationStroke[];
+  intent: string;
+  marks: CollaborationMark[];
 };
 
 type DrawingToolResult = {
   pass: number;
-  appliedStrokeCount: number;
+  appliedMarkCount: number;
   updatedImageDataUrl: string;
+  focusCropDataUrl: string;
+  diffCropDataUrl: string;
+  focusBounds: NormalizedBounds;
+  recentBounds: NormalizedBounds | null;
   stats: CanvasStats;
 };
 
 type NativeCollaborationResult = {
-  appliedStrokeCount: number;
+  appliedMarkCount: number;
   note: string;
   critique?: Partial<Critique>;
 };
@@ -159,6 +189,21 @@ type InstrumentSegmentOptions = {
   size: number;
   pressureResponse: number;
   alphaScale?: number;
+};
+
+type CollaborationMarkRenderOptions = {
+  delayMs?: number;
+  overrideColor?: string;
+  alphaScale?: number;
+  pressureResponse?: number;
+};
+
+type CanvasFeedbackImages = {
+  updatedImageDataUrl: string;
+  focusCropDataUrl: string;
+  diffCropDataUrl: string;
+  focusBounds: NormalizedBounds;
+  recentBounds: NormalizedBounds | null;
 };
 
 const colorNames: Record<string, string> = {
@@ -749,8 +794,8 @@ function App() {
     try {
       const imageDataUrl = getFlattenedCanvasDataUrl({ includeGrid: true });
       let nativeResult: NativeCollaborationResult | null = null;
-      let nativeStrokeCount = 0;
-      let nativeNote = "The AI added tool-call strokes, but stopped before a final critique.";
+      let nativeMarkCount = 0;
+      let nativeNote = "The AI added tool-call marks, but stopped before a final critique.";
 
       if (imageDataUrl && apiConfigured) {
         try {
@@ -764,29 +809,37 @@ function App() {
               addActivity(`Tool pass ${pass}`);
             },
             applyDrawingTool: async (toolCall, pass) => {
-              await drawCollaborationStrokes(ctx, toolCall.arguments.strokes);
+              const recentBounds = getCollaborationMarksBounds(toolCall.arguments.marks);
+              await drawCollaborationMarks(ctx, toolCall.arguments.marks, { delayMs: 28 });
               const nextStats = analyzeCanvas();
-              const updatedImageDataUrl = getFlattenedCanvasDataUrl({ includeGrid: true });
-              nativeStrokeCount += toolCall.arguments.strokes.length;
-              nativeNote = toolCall.arguments.note || nativeNote;
+              const canvas = canvasRef.current;
+              const feedback = canvas
+                ? await buildCanvasFeedbackImages(canvas, background, toolCall.arguments.marks, recentBounds)
+                : null;
+              nativeMarkCount += toolCall.arguments.marks.length;
+              nativeNote = toolCall.arguments.intent || toolCall.arguments.note || nativeNote;
 
-              if (!updatedImageDataUrl) {
+              if (!feedback) {
                 throw new Error("Could not capture updated canvas");
               }
 
               return {
                 pass,
-                appliedStrokeCount: toolCall.arguments.strokes.length,
-                updatedImageDataUrl,
+                appliedMarkCount: toolCall.arguments.marks.length,
+                updatedImageDataUrl: feedback.updatedImageDataUrl,
+                focusCropDataUrl: feedback.focusCropDataUrl,
+                diffCropDataUrl: feedback.diffCropDataUrl,
+                focusBounds: feedback.focusBounds,
+                recentBounds: feedback.recentBounds,
                 stats: nextStats,
               };
             },
           });
           addActivity("Native tool loop complete");
         } catch (error) {
-          if (nativeStrokeCount > 0) {
+          if (nativeMarkCount > 0) {
             nativeResult = {
-              appliedStrokeCount: nativeStrokeCount,
+              appliedMarkCount: nativeMarkCount,
               note: nativeNote,
             };
             addActivity("OpenAI stopped after tool pass");
@@ -796,7 +849,7 @@ function App() {
         }
       }
 
-      if (!nativeResult?.appliedStrokeCount) {
+      if (!nativeResult?.appliedMarkCount) {
         await drawLocalCollaboration(ctx, stats);
       }
 
@@ -820,6 +873,7 @@ function App() {
     analyzeCanvas,
     apiConfigured,
     apiSettings,
+    background,
     collaborationPasses,
     commitHistory,
     getContext,
@@ -846,6 +900,7 @@ function App() {
             aria-label="API settings"
             className={settingsOpen ? "settings-toggle active" : "settings-toggle"}
             onClick={() => {
+              setToolsOpen(false);
               setInspectorOpen(true);
               setSettingsOpen((open) => !open);
             }}
@@ -861,7 +916,10 @@ function App() {
         aria-expanded={toolsOpen}
         aria-label={toolsOpen ? "Hide drawing controls" : "Show drawing controls"}
         className={toolsOpen ? "edge-tab left open" : "edge-tab left"}
-        onClick={() => setToolsOpen((open) => !open)}
+        onClick={() => {
+          setInspectorOpen(false);
+          setToolsOpen((open) => !open);
+        }}
         type="button"
       >
         <Palette aria-hidden="true" size={18} />
@@ -872,7 +930,10 @@ function App() {
         aria-expanded={inspectorOpen}
         aria-label={inspectorOpen ? "Hide AI panel" : "Show AI panel"}
         className={inspectorOpen ? "edge-tab right open" : "edge-tab right"}
-        onClick={() => setInspectorOpen((open) => !open)}
+        onClick={() => {
+          setToolsOpen(false);
+          setInspectorOpen((open) => !open);
+        }}
         type="button"
       >
         <Sparkles aria-hidden="true" size={18} />
@@ -1001,7 +1062,17 @@ function App() {
           </div>
         </aside>
 
-        <section className="canvas-zone" aria-label="Canvas">
+        <section
+          className={[
+            "canvas-zone",
+            toolsOpen || inspectorOpen ? "drawer-open" : "",
+            toolsOpen ? "tools-open" : "",
+            inspectorOpen ? "inspector-open" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          aria-label="Canvas"
+        >
           <div className="canvas-topbar">
             <div>
               <span className="topbar-label">Active</span>
@@ -1213,8 +1284,8 @@ function App() {
           <section className="panel-block activity-block">
             <div className="panel-heading">Session</div>
             <div className="activity-list">
-              {activity.map((item) => (
-                <span key={item}>{item}</span>
+              {activity.map((item, index) => (
+                <span key={`${item}-${index}`}>{item}</span>
               ))}
             </div>
           </section>
@@ -1600,30 +1671,615 @@ async function drawLocalCollaboration(ctx: CanvasRenderingContext2D, stats: Canv
   }
 }
 
-async function drawCollaborationStrokes(ctx: CanvasRenderingContext2D, strokes: CollaborationStroke[]) {
-  for (const stroke of strokes.slice(0, 8)) {
-    const samples = stroke.points.map((point, index) =>
-      strokePointFromPoint(
-        denormalizeModelPoint(point),
-        0.56 + (index % 3) * 0.08,
-        stroke.tool === "pencil" ? 24 : 0,
-        stroke.tool === "pencil" ? -12 : 0,
-      ),
+async function drawCollaborationMarks(
+  ctx: CanvasRenderingContext2D,
+  marks: CollaborationMark[],
+  options: CollaborationMarkRenderOptions = {},
+) {
+  for (const mark of marks.slice(0, 8)) {
+    await drawCollaborationMark(ctx, mark, options);
+  }
+}
+
+async function drawCollaborationMark(
+  ctx: CanvasRenderingContext2D,
+  mark: CollaborationMark,
+  options: CollaborationMarkRenderOptions,
+) {
+  switch (mark.kind) {
+    case "ellipse":
+      await drawEllipseMark(ctx, mark, options);
+      return;
+    case "rectangle":
+      await drawRectangleMark(ctx, mark, options);
+      return;
+    case "dot":
+      await drawDotMark(ctx, mark, options);
+      return;
+    case "hatch":
+      drawHatchMark(ctx, mark, options);
+      return;
+    case "star":
+      await drawStarMark(ctx, mark, options);
+      return;
+    case "stroke":
+    case "line":
+    case "curve":
+    case "highlight":
+    case "smudge":
+      await drawPathMark(ctx, mark, options);
+      return;
+  }
+}
+
+async function drawPathMark(
+  ctx: CanvasRenderingContext2D,
+  mark: CollaborationMark,
+  options: CollaborationMarkRenderOptions,
+) {
+  const canvasPoints = mark.points.map(denormalizeModelPoint);
+  if (!canvasPoints.length) return;
+
+  if (canvasPoints.length === 1) {
+    await drawDotMark(ctx, { ...mark, kind: "dot" }, options);
+    return;
+  }
+
+  const points =
+    mark.kind === "line"
+      ? canvasPoints.slice(0, 2)
+      : mark.kind === "curve" || mark.kind === "smudge"
+        ? sampleSmoothPolyline(canvasPoints, 10)
+        : canvasPoints;
+  const passes = mark.kind === "smudge" ? 3 : 1;
+
+  for (let pass = 0; pass < passes; pass += 1) {
+    const offset = mark.kind === "smudge" ? (pass - 1) * Math.max(2, mark.width * 0.36) : 0;
+    const offsetPoints = offset ? offsetPolyline(points, offset) : points;
+    await drawInstrumentPolyline(ctx, offsetPoints, mark, options, false, {
+      alphaScale: mark.kind === "highlight" ? 0.62 : mark.kind === "smudge" ? 0.34 : 1,
+      sizeScale: mark.kind === "highlight" ? 2.4 : mark.kind === "smudge" ? 2.15 : 1,
+      tool: mark.kind === "highlight" ? "marker" : mark.tool,
+    });
+  }
+}
+
+async function drawEllipseMark(
+  ctx: CanvasRenderingContext2D,
+  mark: CollaborationMark,
+  options: CollaborationMarkRenderOptions,
+) {
+  const box = canvasBoxFromMark(mark);
+  if (!box) return;
+
+  const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const radiusX = Math.max(2, Math.abs(box.width) / 2);
+  const radiusY = Math.max(2, Math.abs(box.height) / 2);
+  const rotation = degreesToRadians(mark.rotation);
+  const color = options.overrideColor ?? mark.color;
+
+  if (mark.fill) {
+    ctx.save();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = markAlpha(mark, options, mark.tool === "marker" ? 0.34 : 0.42);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.ellipse(center.x, center.y, radiusX, radiusY, rotation, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  const outline = sampleEllipse(center, radiusX, radiusY, rotation, 54);
+  await drawInstrumentPolyline(ctx, outline, mark, options, true);
+}
+
+async function drawRectangleMark(
+  ctx: CanvasRenderingContext2D,
+  mark: CollaborationMark,
+  options: CollaborationMarkRenderOptions,
+) {
+  const box = canvasBoxFromMark(mark);
+  if (!box) return;
+
+  const points = rectanglePoints(box, degreesToRadians(mark.rotation));
+  const color = options.overrideColor ?? mark.color;
+
+  if (mark.fill) {
+    fillPolygon(ctx, points, color, markAlpha(mark, options, mark.tool === "marker" ? 0.28 : 0.38));
+  }
+
+  await drawInstrumentPolyline(ctx, points, mark, options, true);
+}
+
+async function drawDotMark(
+  ctx: CanvasRenderingContext2D,
+  mark: CollaborationMark,
+  options: CollaborationMarkRenderOptions,
+) {
+  const center = denormalizeModelPoint(mark.points[0]);
+  const edge = mark.points[1] ? denormalizeModelPoint(mark.points[1]) : null;
+  const radius = edge ? Math.hypot(edge.x - center.x, edge.y - center.y) : mark.width * 2.6;
+  const color = options.overrideColor ?? mark.color;
+
+  if (mark.fill || mark.kind === "dot") {
+    ctx.save();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = markAlpha(mark, options, mark.tool === "marker" ? 0.52 : 0.72);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, Math.max(1.5, radius), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  if (!mark.fill) {
+    const outline = sampleEllipse(center, Math.max(1.5, radius), Math.max(1.5, radius), 0, 34);
+    await drawInstrumentPolyline(ctx, outline, mark, options, true);
+  }
+}
+
+function drawHatchMark(ctx: CanvasRenderingContext2D, mark: CollaborationMark, options: CollaborationMarkRenderOptions) {
+  const box = canvasBoxFromMark(mark);
+  if (!box) return;
+
+  const color = options.overrideColor ?? mark.color;
+  const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const diagonal = Math.hypot(box.width, box.height) * 0.72;
+  const spacing = Math.max(4, normalizedDistanceToCanvas(mark.spacing));
+
+  ctx.save();
+  ctx.globalCompositeOperation = "source-over";
+  ctx.beginPath();
+  ctx.rect(box.x, box.y, box.width, box.height);
+  ctx.clip();
+  ctx.translate(center.x, center.y);
+  ctx.rotate(degreesToRadians(mark.rotation));
+  ctx.strokeStyle = color;
+  ctx.lineCap = "round";
+  ctx.lineWidth = Math.max(1, mark.width);
+  ctx.globalAlpha = markAlpha(mark, options, 0.78);
+
+  for (let x = -diagonal; x <= diagonal; x += spacing) {
+    ctx.beginPath();
+    ctx.moveTo(x, -diagonal);
+    ctx.lineTo(x, diagonal);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+async function drawStarMark(
+  ctx: CanvasRenderingContext2D,
+  mark: CollaborationMark,
+  options: CollaborationMarkRenderOptions,
+) {
+  const center = denormalizeModelPoint(mark.points[0]);
+  const edge = mark.points[1] ? denormalizeModelPoint(mark.points[1]) : null;
+  const radius = edge ? Math.hypot(edge.x - center.x, edge.y - center.y) : mark.width * 4;
+  const points = starPoints(center, Math.max(5, radius), degreesToRadians(mark.rotation));
+  const color = options.overrideColor ?? mark.color;
+
+  if (mark.fill) {
+    fillPolygon(ctx, points, color, markAlpha(mark, options, mark.tool === "marker" ? 0.3 : 0.46));
+  }
+
+  await drawInstrumentPolyline(ctx, points, mark, options, true);
+}
+
+async function drawInstrumentPolyline(
+  ctx: CanvasRenderingContext2D,
+  points: Point[],
+  mark: CollaborationMark,
+  options: CollaborationMarkRenderOptions,
+  closePath: boolean,
+  overrides: { alphaScale?: number; sizeScale?: number; tool?: DrawingTool } = {},
+) {
+  if (points.length < 2) return;
+
+  const color = options.overrideColor ?? mark.color;
+  const tool = overrides.tool ?? mark.tool;
+  const path = closePath ? [...points, points[0]] : points;
+
+  for (let index = 1; index < path.length; index += 1) {
+    const from = strokePointFromPoint(
+      path[index - 1],
+      0.56 + (index % 3) * 0.08,
+      tool === "pencil" ? 24 : 0,
+      tool === "pencil" ? -12 : 0,
+    );
+    const to = strokePointFromPoint(
+      path[index],
+      0.62 + (index % 2) * 0.08,
+      tool === "pencil" ? 24 : 0,
+      tool === "pencil" ? -12 : 0,
     );
 
-    for (let index = 1; index < samples.length; index += 1) {
-      drawInstrumentSegment(ctx, {
-        from: samples[index - 1],
-        to: samples[index],
-        tool: stroke.tool,
-        color: stroke.color,
-        size: stroke.tool === "marker" ? stroke.width * 0.72 : stroke.tool === "pencil" ? stroke.width * 1.18 : stroke.width,
-        pressureResponse: 62,
-        alphaScale: stroke.alpha,
-      });
-      await new Promise((resolve) => window.setTimeout(resolve, 28));
+    drawInstrumentSegment(ctx, {
+      from,
+      to,
+      tool,
+      color,
+      size: collaborationMarkSize(mark, tool) * (overrides.sizeScale ?? 1),
+      pressureResponse: options.pressureResponse ?? 62,
+      alphaScale: markAlpha(mark, options, overrides.alphaScale ?? 1),
+    });
+
+    if (options.delayMs) {
+      await new Promise((resolve) => window.setTimeout(resolve, options.delayMs));
     }
   }
+}
+
+function collaborationMarkSize(mark: CollaborationMark, tool: DrawingTool) {
+  if (tool === "marker") return mark.width * 0.72;
+  if (tool === "pencil") return mark.width * 1.18;
+  return mark.width;
+}
+
+function markAlpha(mark: CollaborationMark, options: CollaborationMarkRenderOptions, scale = 1) {
+  return clamp(mark.alpha * (options.alphaScale ?? 1) * scale, 0.04, 1);
+}
+
+function canvasBoxFromMark(mark: CollaborationMark) {
+  if (!mark.points.length) return null;
+  const first = denormalizeModelPoint(mark.points[0]);
+  const second = mark.points[1] ? denormalizeModelPoint(mark.points[1]) : null;
+  const halfSize = mark.width * 3;
+
+  if (!second) {
+    return {
+      x: first.x - halfSize,
+      y: first.y - halfSize,
+      width: halfSize * 2,
+      height: halfSize * 2,
+    };
+  }
+
+  const x = Math.min(first.x, second.x);
+  const y = Math.min(first.y, second.y);
+  const width = Math.max(2, Math.abs(second.x - first.x));
+  const height = Math.max(2, Math.abs(second.y - first.y));
+  return { x, y, width, height };
+}
+
+function rectanglePoints(
+  box: { x: number; y: number; width: number; height: number },
+  rotation: number,
+): Point[] {
+  const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const points = [
+    { x: box.x, y: box.y },
+    { x: box.x + box.width, y: box.y },
+    { x: box.x + box.width, y: box.y + box.height },
+    { x: box.x, y: box.y + box.height },
+  ];
+
+  return rotation ? points.map((point) => rotatePoint(point, center, rotation)) : points;
+}
+
+function sampleEllipse(center: Point, radiusX: number, radiusY: number, rotation: number, steps: number): Point[] {
+  const points: Point[] = [];
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+
+  for (let index = 0; index < steps; index += 1) {
+    const angle = (Math.PI * 2 * index) / steps;
+    const x = Math.cos(angle) * radiusX;
+    const y = Math.sin(angle) * radiusY;
+    points.push({
+      x: center.x + x * cos - y * sin,
+      y: center.y + x * sin + y * cos,
+    });
+  }
+
+  return points;
+}
+
+function starPoints(center: Point, radius: number, rotation: number): Point[] {
+  const points: Point[] = [];
+  const inner = radius * 0.44;
+
+  for (let index = 0; index < 10; index += 1) {
+    const angle = rotation - Math.PI / 2 + (Math.PI * index) / 5;
+    const currentRadius = index % 2 === 0 ? radius : inner;
+    points.push({
+      x: center.x + Math.cos(angle) * currentRadius,
+      y: center.y + Math.sin(angle) * currentRadius,
+    });
+  }
+
+  return points;
+}
+
+function fillPolygon(ctx: CanvasRenderingContext2D, points: Point[], color: string, alpha: number) {
+  if (!points.length) return;
+
+  ctx.save();
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  points.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function rotatePoint(point: Point, center: Point, rotation: number): Point {
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const x = point.x - center.x;
+  const y = point.y - center.y;
+
+  return {
+    x: center.x + x * cos - y * sin,
+    y: center.y + x * sin + y * cos,
+  };
+}
+
+function sampleSmoothPolyline(points: Point[], stepsPerSegment: number) {
+  if (points.length < 3) return points;
+
+  const sampled: Point[] = [points[0]];
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const p0 = points[Math.max(0, index - 1)];
+    const p1 = points[index];
+    const p2 = points[index + 1];
+    const p3 = points[Math.min(points.length - 1, index + 2)];
+
+    for (let step = 1; step <= stepsPerSegment; step += 1) {
+      const t = step / stepsPerSegment;
+      const t2 = t * t;
+      const t3 = t2 * t;
+      sampled.push({
+        x: 0.5 * (2 * p1.x + (-p0.x + p2.x) * t + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3),
+        y: 0.5 * (2 * p1.y + (-p0.y + p2.y) * t + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3),
+      });
+    }
+  }
+
+  return sampled;
+}
+
+function offsetPolyline(points: Point[], amount: number) {
+  if (points.length < 2) return points;
+
+  return points.map((point, index) => {
+    const previous = points[Math.max(0, index - 1)];
+    const next = points[Math.min(points.length - 1, index + 1)];
+    const dx = next.x - previous.x;
+    const dy = next.y - previous.y;
+    const length = Math.hypot(dx, dy) || 1;
+
+    return {
+      x: point.x + (-dy / length) * amount,
+      y: point.y + (dx / length) * amount,
+    };
+  });
+}
+
+function normalizedDistanceToCanvas(value: number) {
+  return (value / MODEL_COORDINATE_MAX) * ((CANVAS_WIDTH + CANVAS_HEIGHT) / 2);
+}
+
+function degreesToRadians(value: number) {
+  return (value * Math.PI) / 180;
+}
+
+async function buildCanvasFeedbackImages(
+  canvas: HTMLCanvasElement,
+  backgroundColor: string,
+  marks: CollaborationMark[],
+  recentBounds: NormalizedBounds | null,
+): Promise<CanvasFeedbackImages> {
+  const focusBounds = expandNormalizedBounds(recentBounds ?? fullNormalizedBounds(), 90, 240);
+  const updatedCanvas = createFeedbackCanvas(canvas, backgroundColor, recentBounds, "last tool area");
+  const diffCanvas = createFeedbackCanvas(canvas, backgroundColor, recentBounds, "last tool area");
+  const diffContext = diffCanvas.getContext("2d");
+
+  if (diffContext) {
+    await drawCollaborationMarks(diffContext, marks, {
+      overrideColor: "#ff4fa3",
+      alphaScale: 1.15,
+      pressureResponse: 70,
+    });
+    drawFeedbackLabel(diffContext, "hot pink ghost = latest AI marks", 12, CANVAS_HEIGHT - 38);
+  }
+
+  return {
+    updatedImageDataUrl: updatedCanvas.toDataURL("image/png"),
+    focusCropDataUrl: createCropDataUrl(updatedCanvas, focusBounds, "focus crop"),
+    diffCropDataUrl: createCropDataUrl(diffCanvas, focusBounds, "latest marks"),
+    focusBounds,
+    recentBounds,
+  };
+}
+
+function createFeedbackCanvas(
+  canvas: HTMLCanvasElement,
+  backgroundColor: string,
+  recentBounds: NormalizedBounds | null,
+  boundsLabel: string,
+) {
+  const exportCanvas = document.createElement("canvas");
+  exportCanvas.width = CANVAS_WIDTH;
+  exportCanvas.height = CANVAS_HEIGHT;
+  const exportContext = exportCanvas.getContext("2d");
+
+  if (!exportContext) return exportCanvas;
+
+  exportContext.fillStyle = backgroundColor;
+  exportContext.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+  exportContext.drawImage(canvas, 0, 0);
+  drawCoordinateGrid(exportContext, backgroundColor);
+
+  if (recentBounds) {
+    drawNormalizedBoundsOverlay(exportContext, recentBounds, boundsLabel);
+  }
+
+  return exportCanvas;
+}
+
+function createCropDataUrl(sourceCanvas: HTMLCanvasElement, bounds: NormalizedBounds, label: string) {
+  const rect = normalizedBoundsToCanvasRect(bounds);
+  const maxOutputSize = 720;
+  const minOutputSize = 360;
+  const largestSide = Math.max(rect.width, rect.height);
+  const smallestSide = Math.min(rect.width, rect.height);
+  const scale = Math.min(2, maxOutputSize / largestSide);
+  const minScale = smallestSide > 0 ? Math.min(2, minOutputSize / smallestSide) : scale;
+  const outputScale = Math.max(scale, minScale);
+  const outputWidth = Math.round(clamp(rect.width * outputScale, 1, maxOutputSize));
+  const outputHeight = Math.round(clamp(rect.height * outputScale, 1, maxOutputSize));
+  const cropCanvas = document.createElement("canvas");
+  cropCanvas.width = outputWidth;
+  cropCanvas.height = outputHeight;
+  const cropContext = cropCanvas.getContext("2d");
+
+  if (!cropContext) return sourceCanvas.toDataURL("image/png");
+
+  cropContext.drawImage(sourceCanvas, rect.x, rect.y, rect.width, rect.height, 0, 0, outputWidth, outputHeight);
+  cropContext.strokeStyle = "rgba(255, 79, 163, 0.92)";
+  cropContext.lineWidth = 4;
+  cropContext.strokeRect(2, 2, outputWidth - 4, outputHeight - 4);
+  drawFeedbackLabel(
+    cropContext,
+    `${label}: x ${Math.round(bounds.minX)}-${Math.round(bounds.maxX)} / y ${Math.round(bounds.minY)}-${Math.round(bounds.maxY)}`,
+    12,
+    12,
+  );
+
+  return cropCanvas.toDataURL("image/png");
+}
+
+function drawNormalizedBoundsOverlay(ctx: CanvasRenderingContext2D, bounds: NormalizedBounds, label: string) {
+  const rect = normalizedBoundsToCanvasRect(bounds);
+  const centerX = rect.x + rect.width / 2;
+  const centerY = rect.y + rect.height / 2;
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(255, 79, 163, 0.86)";
+  ctx.lineWidth = 3;
+  ctx.setLineDash([10, 7]);
+  ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+  ctx.setLineDash([]);
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(centerX - 16, centerY);
+  ctx.lineTo(centerX + 16, centerY);
+  ctx.moveTo(centerX, centerY - 16);
+  ctx.lineTo(centerX, centerY + 16);
+  ctx.stroke();
+  drawFeedbackLabel(ctx, label, clamp(rect.x + 8, 8, CANVAS_WIDTH - 190), clamp(rect.y + 8, 8, CANVAS_HEIGHT - 34));
+  ctx.restore();
+}
+
+function drawFeedbackLabel(ctx: CanvasRenderingContext2D, label: string, x: number, y: number) {
+  ctx.save();
+  ctx.font = "800 16px Inter, ui-sans-serif, system-ui, sans-serif";
+  const width = ctx.measureText(label).width;
+  ctx.fillStyle = "rgba(22, 18, 20, 0.82)";
+  ctx.beginPath();
+  ctx.roundRect(x - 6, y - 5, width + 12, 27, 6);
+  ctx.fill();
+  ctx.fillStyle = "#fff8e8";
+  ctx.fillText(label, x, y + 14);
+  ctx.restore();
+}
+
+function getCollaborationMarksBounds(marks: CollaborationMark[]): NormalizedBounds | null {
+  return marks.reduce<NormalizedBounds | null>((bounds, mark) => {
+    const markBounds = getCollaborationMarkBounds(mark);
+    return markBounds ? mergeNormalizedBounds(bounds, markBounds) : bounds;
+  }, null);
+}
+
+function getCollaborationMarkBounds(mark: CollaborationMark): NormalizedBounds | null {
+  if (!mark.points.length) return null;
+
+  if (mark.kind === "dot" || mark.kind === "star") {
+    const center = mark.points[0];
+    const edge = mark.points[1];
+    const radius = edge ? Math.hypot(edge.x - center.x, edge.y - center.y) : Math.max(36, mark.width * 5);
+    return expandNormalizedBounds(
+      {
+        minX: center.x - radius,
+        minY: center.y - radius,
+        maxX: center.x + radius,
+        maxY: center.y + radius,
+      },
+      Math.max(24, mark.width * 2),
+      110,
+    );
+  }
+
+  let minX = MODEL_COORDINATE_MAX;
+  let minY = MODEL_COORDINATE_MAX;
+  let maxX = 0;
+  let maxY = 0;
+
+  mark.points.forEach((point) => {
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+  });
+
+  return expandNormalizedBounds({ minX, minY, maxX, maxY }, Math.max(28, mark.width * 4), 24);
+}
+
+function mergeNormalizedBounds(
+  first: NormalizedBounds | null,
+  second: NormalizedBounds,
+): NormalizedBounds {
+  if (!first) return second;
+
+  return {
+    minX: Math.min(first.minX, second.minX),
+    minY: Math.min(first.minY, second.minY),
+    maxX: Math.max(first.maxX, second.maxX),
+    maxY: Math.max(first.maxY, second.maxY),
+  };
+}
+
+function expandNormalizedBounds(bounds: NormalizedBounds, padding: number, minSpan: number): NormalizedBounds {
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerY = (bounds.minY + bounds.maxY) / 2;
+  const halfWidth = Math.max((bounds.maxX - bounds.minX) / 2 + padding, minSpan / 2);
+  const halfHeight = Math.max((bounds.maxY - bounds.minY) / 2 + padding, minSpan / 2);
+
+  return {
+    minX: clamp(centerX - halfWidth, 0, MODEL_COORDINATE_MAX),
+    minY: clamp(centerY - halfHeight, 0, MODEL_COORDINATE_MAX),
+    maxX: clamp(centerX + halfWidth, 0, MODEL_COORDINATE_MAX),
+    maxY: clamp(centerY + halfHeight, 0, MODEL_COORDINATE_MAX),
+  };
+}
+
+function normalizedBoundsToCanvasRect(bounds: NormalizedBounds) {
+  const x = normalizedXToCanvas(bounds.minX);
+  const y = normalizedYToCanvas(bounds.minY);
+  const maxX = normalizedXToCanvas(bounds.maxX);
+  const maxY = normalizedYToCanvas(bounds.maxY);
+
+  return {
+    x,
+    y,
+    width: Math.max(1, maxX - x),
+    height: Math.max(1, maxY - y),
+  };
+}
+
+function fullNormalizedBounds(): NormalizedBounds {
+  return {
+    minX: 0,
+    minY: 0,
+    maxX: MODEL_COORDINATE_MAX,
+    maxY: MODEL_COORDINATE_MAX,
+  };
 }
 
 async function requestOpenAiCritique(settings: ApiSettings, imageDataUrl: string, stats: CanvasStats) {
@@ -1702,7 +2358,7 @@ async function requestChatCompletionsToolLoop({
       ],
     },
   ];
-  let appliedStrokeCount = 0;
+  let appliedMarkCount = 0;
   let note = "The native tool loop finished without adding marks.";
 
   for (let pass = 1; pass <= maxPasses; pass += 1) {
@@ -1721,7 +2377,7 @@ async function requestChatCompletionsToolLoop({
 
     if (!toolCalls.length) {
       return {
-        appliedStrokeCount,
+        appliedMarkCount,
         note,
         critique: parseFinalCollaborationCritique(getMessageText(message)),
       };
@@ -1734,8 +2390,8 @@ async function requestChatCompletionsToolLoop({
 
       const result = await applyDrawingTool(toolCall, pass);
       latestResult = result;
-      appliedStrokeCount += result.appliedStrokeCount;
-      note = toolCall.arguments.note || note;
+      appliedMarkCount += result.appliedMarkCount;
+      note = toolCall.arguments.intent || toolCall.arguments.note || note;
 
       messages.push({
         role: "tool",
@@ -1747,16 +2403,7 @@ async function requestChatCompletionsToolLoop({
     if (latestResult) {
       messages.push({
         role: "user",
-        content: [
-          {
-            type: "text",
-            text: followUpPrompt(pass, maxPasses, latestResult.stats),
-          },
-          {
-            type: "image_url",
-            image_url: { url: latestResult.updatedImageDataUrl },
-          },
-        ],
+        content: chatToolResultContent(pass, maxPasses, latestResult),
       });
     }
   }
@@ -1777,7 +2424,7 @@ async function requestChatCompletionsToolLoop({
   const finalMessage = extractChatMessage(finalResponse);
 
   return {
-    appliedStrokeCount,
+    appliedMarkCount,
     note,
     critique: parseFinalCollaborationCritique(getMessageText(finalMessage)),
   };
@@ -1808,7 +2455,7 @@ async function requestResponsesToolLoop({
       ],
     },
   ];
-  let appliedStrokeCount = 0;
+  let appliedMarkCount = 0;
   let note = "The native tool loop finished without adding marks.";
 
   for (let pass = 1; pass <= maxPasses; pass += 1) {
@@ -1828,7 +2475,7 @@ async function requestResponsesToolLoop({
     const toolCalls = extractResponsesToolCalls(response);
     if (!toolCalls.length) {
       return {
-        appliedStrokeCount,
+        appliedMarkCount,
         note,
         critique: parseFinalCollaborationCritique(extractModelText(response)),
       };
@@ -1840,8 +2487,8 @@ async function requestResponsesToolLoop({
       if (toolCall.name !== "draw_strokes") continue;
 
       const result = await applyDrawingTool(toolCall, pass);
-      appliedStrokeCount += result.appliedStrokeCount;
-      note = toolCall.arguments.note || note;
+      appliedMarkCount += result.appliedMarkCount;
+      note = toolCall.arguments.intent || toolCall.arguments.note || note;
 
       nextInput.push({
         type: "function_call_output",
@@ -1850,10 +2497,7 @@ async function requestResponsesToolLoop({
       });
       nextInput.push({
         role: "user",
-        content: [
-          { type: "input_text", text: followUpPrompt(pass, maxPasses, result.stats) },
-          { type: "input_image", image_url: result.updatedImageDataUrl },
-        ],
+        content: responsesToolResultContent(pass, maxPasses, result),
       });
     }
 
@@ -1873,7 +2517,7 @@ async function requestResponsesToolLoop({
   });
 
   return {
-    appliedStrokeCount,
+    appliedMarkCount,
     note,
     critique: parseFinalCollaborationCritique(extractModelText(finalResponse)),
   };
@@ -1911,12 +2555,14 @@ function collaborationSystemPrompt() {
     "You are DrawAssistant, a playful AI Mr Squiggle-style drawing collaborator.",
     "Your job is to discover what the user's squiggle could become, then add a few charming marks that reveal that hidden character, object, creature, scene, or joke.",
     "Be whimsical, warm, and lightly theatrical, but keep the drawing help concrete and visually useful.",
-    "You have one native tool: draw_strokes. Use it to modify the canvas.",
-    "After each draw_strokes call, the tool result contains updated_image, a grid-stamped image data URL of the updated canvas.",
-    "Inspect the updated image before deciding whether another draw_strokes call is needed.",
+    "You have one native tool: draw_strokes. It can draw freehand strokes plus higher-level native marks: line, curve, ellipse, rectangle, dot, hatch, highlight, smudge, and star.",
+    "After each draw_strokes call, the tool result is followed by three vision inputs: updated_image, focus_crop_image, and diff_crop_image. The focus crop is zoomed to the latest edit area. The diff crop repeats your latest marks in hot pink so you can correct placement.",
+    "Inspect the updated image, focus crop, and diff crop before deciding whether another draw_strokes call is needed.",
+    "Before every tool call, form a simple reveal plan internally, then put the visual intent in the tool's intent field.",
     "Think in playful reveal steps: first find the thing hiding in the marks, then add one focused squiggle-improving detail at a time.",
-    "Choose pencil, brush, or marker stroke styles to suit the user's drawing texture. Pencil is best for sketchy Apple Pencil marks, marker for translucent emphasis, brush for confident colorful lines.",
-    "Favor expressive faces, limbs, props, scenery, motion lines, labels, and little finishing details when they help the idea land.",
+    "Choose pencil, brush, or marker styles to suit the user's drawing texture. Pencil is best for sketchy Apple Pencil marks, marker for translucent emphasis, brush for confident colorful lines.",
+    "Use the native mark kinds deliberately: dots for eyes, ellipses for wheels or cheeks, curves for contours, hatching for texture, highlights for glow, smudges for soft shadow, stars for sparkle.",
+    "Favor expressive faces, limbs, props, scenery, motion lines, and little finishing details when they help the idea land.",
     "Do not erase or dominate the user's marks. Preserve the original squiggle as the star and build around it.",
     "Stop when the drawing has become a recognizable playful idea, or when another stroke would overwork it.",
     "When finished, do not call a tool. Return JSON only with headline, body, coverage, composition, and palette. Keep body under 180 characters and make it playful.",
@@ -1928,11 +2574,14 @@ function collaborationInitialPrompt(stats: CanvasStats, maxPasses: number) {
     "Turn this squiggle into something delightful through native tool calls.",
     "The image includes a translucent coordinate grid and edge labels. The grid is only a placement guide; do not treat it as artwork.",
     "Use normalized coordinates only: origin (0,0) is the upper-left inside the canvas, x increases right to 1000, and y increases down to 1000.",
+    "Quick placement examples: center is (500,500), upper-right is near (850,150), lower-left is near (150,850).",
     `Major vertical labels are x=${GRID_X_LABELS.join(", ")}. Major horizontal labels are y=${GRID_Y_LABELS.join(", ")}. Minor grid spacing is ${NORMALIZED_MINOR_GRID_SIZE} normalized units.`,
     `The actual rendered image may be any iPad size; ignore its pixel dimensions and place strokes by the 0-1000 grid labels.`,
     `You may call draw_strokes up to ${maxPasses} time${maxPasses === 1 ? "" : "s"}. Each tool result is the updated image for the next decision.`,
-    "Use draw_strokes for one focused playful reveal at a time. Prefer 1 to 4 strokes per call.",
-    "Set each stroke tool to pencil, brush, or marker. Match the user's hand: sketchy lines should get pencil, bold colorful additions can use brush, translucent accents can use marker.",
+    "Use draw_strokes for one focused playful reveal at a time. Prefer 1 to 5 marks per call.",
+    "Each mark must include kind, tool, color, width, alpha, fill, rotation, spacing, and points. For irrelevant fill/rotation/spacing values use fill=false, rotation=0, spacing=24.",
+    "Set each mark tool to pencil, brush, or marker. Match the user's hand: sketchy lines should get pencil, bold colorful additions can use brush, translucent accents can use marker.",
+    "Mark point semantics: stroke/curve use a path through all points; line uses the first two points; ellipse/rectangle/hatch use first two points as opposing box corners; dot/star use first point as center and second as radius; highlight/smudge use a path through points.",
     "Each pass should have a simple visual intent: for example add eyes, turn a line into a nose, make a hat, connect a body, add ground, or add a tiny comic detail.",
     "Place marks near the existing drawing unless the composition clearly asks for empty-space support. Avoid drifting into unrelated blank areas.",
     `Canvas stats: ${JSON.stringify(summarizeStats(stats))}`,
@@ -1945,6 +2594,7 @@ function followUpPrompt(pass: number, maxPasses: number, stats: CanvasStats) {
   if (remaining <= 0) {
     return [
       "That draw_strokes tool result is now the current canvas.",
+      "Use the focus crop and hot-pink diff crop to check whether your latest marks landed at the intended normalized coordinates.",
       "The pass limit has been reached. Return final playful JSON only with headline, body, coverage, composition, and palette.",
       `Updated canvas stats: ${JSON.stringify(summarizeStats(stats))}`,
     ].join("\n");
@@ -1953,6 +2603,7 @@ function followUpPrompt(pass: number, maxPasses: number, stats: CanvasStats) {
   return [
     "That draw_strokes tool result is now the current canvas.",
     `You have ${remaining} remaining tool call${remaining === 1 ? "" : "s"}.`,
+    "Use the focus crop and hot-pink diff crop to check whether your latest marks landed at the intended normalized coordinates.",
     "Inspect the updated image. Either call draw_strokes again for one focused playful reveal, or stop and return final JSON only.",
     `Updated canvas stats: ${JSON.stringify(summarizeStats(stats))}`,
   ].join("\n");
@@ -1960,6 +2611,44 @@ function followUpPrompt(pass: number, maxPasses: number, stats: CanvasStats) {
 
 function finalCollaborationPrompt() {
   return "Return final playful JSON only with headline, body, coverage, composition, and palette. Keep body under 180 characters. Do not call any tool.";
+}
+
+function chatToolResultContent(pass: number, maxPasses: number, result: DrawingToolResult) {
+  return [
+    {
+      type: "text",
+      text: toolResultFollowUpText(pass, maxPasses, result),
+    },
+    {
+      type: "image_url",
+      image_url: { url: result.updatedImageDataUrl },
+    },
+    {
+      type: "image_url",
+      image_url: { url: result.focusCropDataUrl },
+    },
+    {
+      type: "image_url",
+      image_url: { url: result.diffCropDataUrl },
+    },
+  ];
+}
+
+function responsesToolResultContent(pass: number, maxPasses: number, result: DrawingToolResult) {
+  return [
+    { type: "input_text", text: toolResultFollowUpText(pass, maxPasses, result) },
+    { type: "input_image", image_url: result.updatedImageDataUrl },
+    { type: "input_image", image_url: result.focusCropDataUrl },
+    { type: "input_image", image_url: result.diffCropDataUrl },
+  ];
+}
+
+function toolResultFollowUpText(pass: number, maxPasses: number, result: DrawingToolResult) {
+  return [
+    followUpPrompt(pass, maxPasses, result.stats),
+    `Latest focus crop bounds: x ${Math.round(result.focusBounds.minX)}-${Math.round(result.focusBounds.maxX)}, y ${Math.round(result.focusBounds.minY)}-${Math.round(result.focusBounds.maxY)}.`,
+    "Images are ordered as full current canvas, focus crop, then hot-pink latest-mark diff crop.",
+  ].join("\n");
 }
 
 function summarizeStats(stats: CanvasStats) {
@@ -1992,7 +2681,7 @@ function chatDrawStrokesTool() {
     function: {
       name: "draw_strokes",
       description:
-        "Draw vector strokes using normalized 0-1000 canvas coordinates. The app applies the strokes and returns the updated image as the tool result.",
+        "Draw native vector marks using normalized 0-1000 canvas coordinates. Supports strokes, lines, curves, ellipses, rectangles, dots, hatching, highlights, smudges, and stars. The app applies the marks and returns updated full/crop/diff images as the tool result.",
       parameters: drawStrokesParameters(),
     },
   };
@@ -2003,7 +2692,7 @@ function responsesDrawStrokesTool() {
     type: "function",
     name: "draw_strokes",
     description:
-      "Draw vector strokes using normalized 0-1000 canvas coordinates. The app applies the strokes and returns the updated image as the tool result.",
+      "Draw native vector marks using normalized 0-1000 canvas coordinates. Supports strokes, lines, curves, ellipses, rectangles, dots, hatching, highlights, smudges, and stars. The app applies the marks and returns updated full/crop/diff images as the tool result.",
     parameters: drawStrokesParameters(),
     strict: true,
   };
@@ -2018,26 +2707,37 @@ function drawStrokesParameters(): Record<string, unknown> {
         type: "string",
         description: "Short reason for this focused drawing pass.",
       },
-      strokes: {
+      intent: {
+        type: "string",
+        description: "The concrete visual intention for this pass, such as 'add two eyes and a rocket fin'.",
+      },
+      marks: {
         type: "array",
         minItems: 1,
-        maxItems: 4,
-        items: strokeSchema(),
+        maxItems: 5,
+        description: "Native drawing marks for one focused pass.",
+        items: markSchema(),
       },
     },
-    required: ["note", "strokes"],
+    required: ["note", "intent", "marks"],
   };
 }
 
-function strokeSchema(): Record<string, unknown> {
+function markSchema(): Record<string, unknown> {
   return {
     type: "object",
     additionalProperties: false,
     properties: {
+      kind: {
+        type: "string",
+        enum: ["stroke", "line", "curve", "ellipse", "rectangle", "dot", "hatch", "highlight", "smudge", "star"],
+        description:
+          "Native mark kind. stroke/curve follow all points; line uses first two; ellipse/rectangle/hatch use first two as opposing box corners; dot/star use first point as center and second as radius; highlight/smudge follow points.",
+      },
       tool: {
         type: "string",
         enum: ["pencil", "brush", "marker"],
-        description: "Drawing style for this stroke. Use pencil for sketch texture, brush for clean color, marker for translucent broad accents.",
+        description: "Drawing style for this mark. Use pencil for sketch texture, brush for clean color, marker for translucent broad accents.",
       },
       color: {
         type: "string",
@@ -2046,17 +2746,33 @@ function strokeSchema(): Record<string, unknown> {
       width: {
         type: "number",
         minimum: 2,
-        maximum: 16,
+        maximum: 36,
       },
       alpha: {
         type: "number",
-        minimum: 0.15,
-        maximum: 0.95,
+        minimum: 0.08,
+        maximum: 0.98,
+      },
+      fill: {
+        type: "boolean",
+        description: "Whether to fill closed marks such as ellipse, rectangle, dot, or star. Use false for open marks.",
+      },
+      rotation: {
+        type: "number",
+        minimum: -180,
+        maximum: 180,
+        description: "Rotation in degrees for ellipse, rectangle, hatch, and star. Use 0 when irrelevant.",
+      },
+      spacing: {
+        type: "number",
+        minimum: 8,
+        maximum: 160,
+        description: "Normalized spacing for hatch marks. Use 24 when irrelevant.",
       },
       points: {
         type: "array",
-        minItems: 2,
-        maxItems: 7,
+        minItems: 1,
+        maxItems: 10,
         description: "Normalized points. x=0 is left, x=1000 is right, y=0 is top, y=1000 is bottom.",
         items: {
           type: "object",
@@ -2069,16 +2785,18 @@ function strokeSchema(): Record<string, unknown> {
         },
       },
     },
-    required: ["tool", "color", "width", "alpha", "points"],
+    required: ["kind", "tool", "color", "width", "alpha", "fill", "rotation", "spacing", "points"],
   };
 }
 
 function buildDrawingToolOutput(result: DrawingToolResult) {
   return {
     type: "updated_image",
-    updated_image: result.updatedImageDataUrl,
+    updated_image: "attached as the next full current canvas image",
+    focus_crop_image: "attached as the next zoomed focus crop image",
+    diff_crop_image: "attached as the next hot-pink latest-mark diff crop image",
     pass: result.pass,
-    applied_stroke_count: result.appliedStrokeCount,
+    applied_mark_count: result.appliedMarkCount,
     canvas: {
       width: MODEL_COORDINATE_MAX,
       height: MODEL_COORDINATE_MAX,
@@ -2088,6 +2806,13 @@ function buildDrawingToolOutput(result: DrawingToolResult) {
         height: CANVAS_HEIGHT,
       },
     },
+    focus_crop: result.focusBounds,
+    recent_change_bounds: result.recentBounds,
+    feedback_notes: [
+      "updated_image is the full grid-stamped current canvas",
+      "focus_crop_image zooms into the latest edit area with normalized bounds in its label",
+      "diff_crop_image repeats the latest tool marks in hot pink so placement can be checked",
+    ],
     stats: summarizeStats(result.stats),
   };
 }
@@ -2151,15 +2876,17 @@ function parseToolArguments(value: unknown): unknown {
 
 function sanitizeDrawingToolArguments(value: unknown): DrawingToolArguments {
   const record = asRecord(value);
-  const rawStrokes = Array.isArray(record?.strokes) ? record.strokes : [];
-  const strokes = rawStrokes
-    .map((stroke) => sanitizeStroke(stroke))
-    .filter((stroke): stroke is CollaborationStroke => Boolean(stroke))
-    .slice(0, 4);
+  const rawMarks = Array.isArray(record?.marks) ? record.marks : Array.isArray(record?.strokes) ? record.strokes : [];
+  const marks = rawMarks
+    .map((mark) => sanitizeMark(mark))
+    .filter((mark): mark is CollaborationMark => Boolean(mark))
+    .slice(0, 5);
+  const note = safeString(record?.note, "Applied a focused drawing tool pass.", 180);
 
   return {
-    note: safeString(record?.note, "Applied a focused drawing tool pass.", 180),
-    strokes,
+    note,
+    intent: safeString(record?.intent, note, 180),
+    marks,
   };
 }
 
@@ -2411,7 +3138,7 @@ function sanitizeCritique(value: unknown, stats: CanvasStats): Critique {
   };
 }
 
-function sanitizeStroke(value: unknown): CollaborationStroke | null {
+function sanitizeMark(value: unknown): CollaborationMark | null {
   const record = asRecord(value);
   if (!record) return null;
 
@@ -2431,19 +3158,41 @@ function sanitizeStroke(value: unknown): CollaborationStroke | null {
       };
     })
     .filter((point): point is Point => Boolean(point))
-    .slice(0, 7);
+    .slice(0, 10);
 
-  if (points.length < 2) return null;
+  const kind = sanitizeMarkKind(record.kind, points.length > 2 ? "stroke" : "line");
+  const minimumPoints = kind === "dot" || kind === "star" ? 1 : 2;
+  if (points.length < minimumPoints) return null;
 
   const color = typeof record.color === "string" && /^#[0-9a-f]{6}$/i.test(record.color) ? record.color : "#64d8c8";
-  const width = clamp(readNumber(record.width) ?? 6, 2, 16);
-  const alpha = clamp(readNumber(record.alpha) ?? 0.78, 0.15, 0.95);
+  const width = clamp(readNumber(record.width) ?? 6, 2, 36);
+  const alpha = clamp(readNumber(record.alpha) ?? 0.78, 0.08, 0.98);
   const tool = sanitizeDrawingTool(record.tool);
+  const fill = typeof record.fill === "boolean" ? record.fill : kind === "dot";
+  const rotation = clamp(readNumber(record.rotation) ?? 0, -180, 180);
+  const spacing = clamp(readNumber(record.spacing) ?? 24, 8, 160);
 
-  return { tool, color, width, alpha, points };
+  return { kind, tool, color, width, alpha, fill, rotation, spacing, points };
 }
 
-function sanitizeDrawingTool(value: unknown): Exclude<Tool, "eraser"> {
+function sanitizeMarkKind(value: unknown, fallback: CollaborationMarkKind): CollaborationMarkKind {
+  const allowed: CollaborationMarkKind[] = [
+    "stroke",
+    "line",
+    "curve",
+    "ellipse",
+    "rectangle",
+    "dot",
+    "hatch",
+    "highlight",
+    "smudge",
+    "star",
+  ];
+
+  return allowed.includes(value as CollaborationMarkKind) ? (value as CollaborationMarkKind) : fallback;
+}
+
+function sanitizeDrawingTool(value: unknown): DrawingTool {
   return value === "pencil" || value === "brush" || value === "marker" ? value : "pencil";
 }
 

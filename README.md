@@ -2,7 +2,9 @@
 
 An AI Mr Squiggle-style drawing playground: draw a few marks on the canvas, ask for a playful critique, and let the assistant discover what the squiggle wants to become.
 
-The canvas includes a toggleable normalized coordinate grid. Collaboration uses native OpenAI tool calling with a `draw_strokes` tool: the model calls the tool with stable `0..1000` x/y coordinates, the app maps those points onto the live iPad canvas, the tool result includes the updated grid-stamped image, and the model can loop for up to 10 playful reveal passes or stop with a final critique.
+The canvas includes a toggleable normalized coordinate grid. Collaboration uses native OpenAI tool calling with a `draw_strokes` tool: the model calls the tool with stable `0..1000` x/y coordinates, the app maps those points onto the live iPad canvas, then the next loop receives updated grid-stamped vision feedback. The model can loop for up to 10 playful reveal passes or stop with a final critique.
+
+The drawing tool now accepts native marks as well as freehand paths: `stroke`, `line`, `curve`, `ellipse`, `rectangle`, `dot`, `hatch`, `highlight`, `smudge`, and `star`. After every tool call the model receives the full updated image, a focused crop around the latest edit, and a hot-pink diff crop that repeats the newest AI marks so it can correct placement on the next pass.
 
 ## OpenAI proxy setup
 

@@ -465,12 +465,12 @@ canvas {
 }
 
 .x-label {
-  top: 6px;
+  top: calc(max(6px, env(safe-area-inset-top)) + 2px);
   transform: translateX(-50%);
 }
 
 .y-label {
-  left: 6px;
+  left: calc(max(6px, env(safe-area-inset-left)) + 2px);
   transform: translateY(-50%);
 }
 
@@ -811,8 +811,8 @@ canvas {
 
 .app-header {
   position: fixed;
-  top: max(12px, env(safe-area-inset-top));
-  left: max(12px, env(safe-area-inset-left));
+  top: calc(max(12px, env(safe-area-inset-top)) + 4px);
+  left: calc(max(12px, env(safe-area-inset-left)) + 6px);
   z-index: 60;
   align-items: center;
   min-height: 48px;
@@ -851,10 +851,11 @@ h1 {
 
 .canvas-topbar {
   position: fixed;
-  top: calc(max(12px, env(safe-area-inset-top)) + 62px);
-  right: max(14px, env(safe-area-inset-right));
+  top: calc(max(12px, env(safe-area-inset-top)) + 72px);
+  left: 50%;
+  right: auto;
   z-index: 30;
-  width: min(560px, calc(100vw - 430px));
+  width: min(520px, calc(100vw - 112px));
   min-height: 44px;
   padding: 5px 7px 5px 12px;
   border: 1px solid rgba(255, 248, 232, 0.14);
@@ -862,7 +863,16 @@ h1 {
   background: rgba(45, 42, 37, 0.7);
   box-shadow: 0 16px 44px rgba(54, 36, 19, 0.18);
   backdrop-filter: blur(18px);
-  transform: none;
+  transform: translateX(-50%);
+  transition:
+    opacity 160ms ease,
+    transform 180ms ease;
+}
+
+.canvas-zone.drawer-open .canvas-topbar {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -10px);
 }
 
 .prompt-bar {
@@ -887,10 +897,10 @@ h1 {
 .tool-rail,
 .inspector {
   position: fixed;
-  top: calc(max(12px, env(safe-area-inset-top)) + 68px);
+  top: calc(max(12px, env(safe-area-inset-top)) + 76px);
   bottom: calc(max(16px, env(safe-area-inset-bottom)) + 82px);
   z-index: 50;
-  width: min(340px, calc(100vw - 86px));
+  width: min(320px, calc(100vw - 96px));
   max-height: none;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -907,7 +917,7 @@ h1 {
 }
 
 .tool-rail {
-  left: max(14px, env(safe-area-inset-left));
+  left: calc(max(14px, env(safe-area-inset-left)) + 4px);
   display: flex;
   padding: 14px;
   transform: translateX(calc(-100% - 24px));
@@ -918,7 +928,7 @@ h1 {
 }
 
 .inspector {
-  right: max(14px, env(safe-area-inset-right));
+  right: calc(max(14px, env(safe-area-inset-right)) + 4px);
   display: flex;
   transform: translateX(calc(100% + 24px));
 }
@@ -928,12 +938,17 @@ h1 {
 }
 
 .drawer-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   min-height: 38px;
+  padding-bottom: 4px;
   color: #7fe2d3;
+  background: linear-gradient(180deg, rgba(45, 42, 37, 0.98), rgba(45, 42, 37, 0.76) 70%, transparent);
   font-size: 0.78rem;
   font-weight: 850;
   letter-spacing: 0.08em;
@@ -958,9 +973,11 @@ h1 {
   align-items: center;
   justify-content: center;
   gap: 8px;
+  min-width: 52px;
   min-height: 52px;
-  padding: 0 12px;
+  padding: 0 14px;
   border: 1px solid var(--line);
+  border-radius: 999px;
   color: #241c15;
   background: linear-gradient(180deg, #f4d261, #dcb545);
   box-shadow:
@@ -971,15 +988,11 @@ h1 {
 }
 
 .edge-tab.left {
-  left: 0;
-  border-left: 0;
-  border-radius: 0 8px 8px 0;
+  left: calc(max(10px, env(safe-area-inset-left)) + 2px);
 }
 
 .edge-tab.right {
-  right: 0;
-  border-right: 0;
-  border-radius: 8px 0 0 8px;
+  right: calc(max(10px, env(safe-area-inset-right)) + 2px);
 }
 
 .edge-tab.open {
@@ -996,9 +1009,19 @@ h1 {
   text-transform: uppercase;
 }
 
+@media (max-width: 1180px) {
+  .edge-tab {
+    padding: 0;
+  }
+
+  .edge-tab span {
+    display: none;
+  }
+}
+
 @media (max-width: 900px) {
   .app-header {
-    left: max(12px, env(safe-area-inset-left));
+    left: calc(max(12px, env(safe-area-inset-left)) + 6px);
     align-items: center;
     flex-direction: row;
     transform: none;
