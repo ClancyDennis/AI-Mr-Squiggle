@@ -498,6 +498,11 @@ canvas {
   background: linear-gradient(90deg, var(--violet), var(--mint));
 }
 
+.secondary-action.stop-action {
+  color: #fff5f4;
+  background: linear-gradient(90deg, #ee5d57, #dc5796);
+}
+
 .inspector {
   display: flex;
   flex-direction: column;

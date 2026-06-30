@@ -12,6 +12,7 @@ import {
   Server,
   Settings,
   Sparkles,
+  Square,
   Trash2,
   Undo2,
   WandSparkles,
@@ -32,6 +33,11 @@ const DEFAULT_MAX_COMPLETION_TOKENS = 2200;
 const MIN_COMPLETION_TOKENS = 200;
 const MAX_COMPLETION_TOKENS = 12000;
 const COMPLETION_TOKEN_STEP = 100;
+// Model-facing images are downscaled and JPEG-encoded to cut upload/token cost.
+// Coordinates are normalized 0-1000, so resolution does not affect placement.
+const MODEL_IMAGE_MAX_EDGE = 1280;
+const MODEL_IMAGE_QUALITY = 0.82;
+const REQUEST_TIMEOUT_MS = 60_000;
 
 let CANVAS_WIDTH = DEFAULT_CANVAS_WIDTH;
 let CANVAS_HEIGHT = DEFAULT_CANVAS_HEIGHT;
@@ -223,6 +229,25 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+// Encode a canvas as a downscaled JPEG data URL for sending to the model.
+function encodeCanvasForModel(canvas: HTMLCanvasElement, maxEdge = MODEL_IMAGE_MAX_EDGE): string {
+  const longestSide = Math.max(canvas.width, canvas.height);
+  if (longestSide <= maxEdge) {
+    return canvas.toDataURL("image/jpeg", MODEL_IMAGE_QUALITY);
+  }
+
+  const scale = maxEdge / longestSide;
+  const scaled = document.createElement("canvas");
+  scaled.width = Math.max(1, Math.round(canvas.width * scale));
+  scaled.height = Math.max(1, Math.round(canvas.height * scale));
+
+  const ctx = scaled.getContext("2d");
+  if (!ctx) return canvas.toDataURL("image/jpeg", MODEL_IMAGE_QUALITY);
+
+  ctx.drawImage(canvas, 0, 0, scaled.width, scaled.height);
+  return scaled.toDataURL("image/jpeg", MODEL_IMAGE_QUALITY);
+}
+
 function getViewportCanvasSize(): CanvasSize {
   if (typeof window === "undefined") {
     return { width: DEFAULT_CANVAS_WIDTH, height: DEFAULT_CANVAS_HEIGHT };
@@ -366,6 +391,8 @@ function App() {
   const lastPointRef = useRef<StrokePoint | null>(null);
   const historyRef = useRef<string[]>([]);
   const historyIndexRef = useRef(0);
+  const cursorReadoutRef = useRef<HTMLElement | null>(null);
+  const collaborationAbortRef = useRef<AbortController | null>(null);
 
   const [canvasSize, setCanvasSize] = useState<CanvasSize>(() => currentCanvasSize());
   const [tool, setTool] = useState<Tool>("pencil");
@@ -374,7 +401,7 @@ function App() {
   const [brushSize, setBrushSize] = useState(9);
   const [pressureResponse, setPressureResponse] = useState(70);
   const [strokeSmoothing, setStrokeSmoothing] = useState(36);
-  const [history, setHistory] = useState<string[]>([]);
+  const [historyLength, setHistoryLength] = useState(0);
   const [historyIndex, setHistoryIndex] = useState(0);
   const [critique, setCritique] = useState<Critique>(() =>
     buildCritique({
@@ -394,13 +421,12 @@ function App() {
   const [gridVisible, setGridVisible] = useState(true);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [cursorPoint, setCursorPoint] = useState<Point | null>(null);
   const [collaborationPasses, setCollaborationPasses] = useState(3);
   const [collaborationStep, setCollaborationStep] = useState(0);
   const [apiSettings, setApiSettings] = useState<ApiSettings>(() => loadApiSettings());
 
   const canUndo = historyIndex > 0;
-  const canRedo = historyIndex < history.length - 1;
+  const canRedo = historyIndex < historyLength - 1;
   const apiConfigured = isApiConfigured(apiSettings);
 
   const activeColorName = colorNames[ink] ?? "custom";
@@ -446,7 +472,7 @@ function App() {
 
     historyRef.current = next;
     historyIndexRef.current = next.length - 1;
-    setHistory(next);
+    setHistoryLength(next.length);
     setHistoryIndex(next.length - 1);
   }, []);
 
@@ -515,7 +541,7 @@ function App() {
     const snapshot = canvas.toDataURL("image/png");
     historyRef.current = [snapshot];
     historyIndexRef.current = 0;
-    setHistory([snapshot]);
+    setHistoryLength(1);
     setHistoryIndex(0);
 
     let resizeFrame = 0;
@@ -538,6 +564,13 @@ function App() {
     return sampleFromPointerEvent(event.nativeEvent, event.currentTarget);
   }, []);
 
+  // Written imperatively so high-frequency pointer moves don't re-render the whole app.
+  const writeCursorReadout = useCallback((point: Point | null) => {
+    const node = cursorReadoutRef.current;
+    if (!node) return;
+    node.textContent = point ? formatNormalizedPoint(point) : "x/y";
+  }, []);
+
   const drawSegment = useCallback(
     (from: StrokePoint, to: StrokePoint) => {
       const ctx = getContext();
@@ -558,7 +591,7 @@ function App() {
   const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
     const point = pointFromEvent(event);
-    setCursorPoint(point);
+    writeCursorReadout(point);
     isDrawingRef.current = true;
     lastPointRef.current = point;
     drawSegment(point, point);
@@ -577,12 +610,12 @@ function App() {
       lastPointRef.current = point;
     }
 
-    setCursorPoint(lastPointRef.current);
+    writeCursorReadout(lastPointRef.current);
   };
 
   const finishStroke = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!isDrawingRef.current) return;
-    setCursorPoint(pointFromEvent(event));
+    writeCursorReadout(pointFromEvent(event));
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -594,7 +627,7 @@ function App() {
 
   const handlePointerLeave = () => {
     if (!isDrawingRef.current) {
-      setCursorPoint(null);
+      writeCursorReadout(null);
     }
   };
 
@@ -748,7 +781,7 @@ function App() {
         drawCoordinateGrid(exportContext, background);
       }
 
-      return exportCanvas.toDataURL("image/png");
+      return encodeCanvasForModel(exportCanvas);
     },
     [background],
   );
@@ -776,15 +809,24 @@ function App() {
     }
   }, [addActivity, analyzeCanvas, apiConfigured, apiSettings, getFlattenedCanvasDataUrl, isThinking]);
 
+  const stopCollaboration = useCallback(() => {
+    if (!collaborationAbortRef.current) return;
+    collaborationAbortRef.current.abort(new Error("Collaboration stopped"));
+    addActivity("Stopping collaboration");
+  }, [addActivity]);
+
   const collaborate = useCallback(async () => {
     if (isCollaborating) return;
 
+    const abortController = new AbortController();
+    collaborationAbortRef.current = abortController;
     setIsCollaborating(true);
     setCollaborationStep(0);
     addActivity("Collaboration started");
 
     const ctx = getContext();
     if (!ctx) {
+      collaborationAbortRef.current = null;
       setIsCollaborating(false);
       return;
     }
@@ -804,6 +846,7 @@ function App() {
             initialImageDataUrl: imageDataUrl,
             initialStats: stats,
             maxPasses: collaborationPasses,
+            signal: abortController.signal,
             onPassStart: (pass) => {
               setCollaborationStep(pass);
               addActivity(`Tool pass ${pass}`);
@@ -837,19 +880,21 @@ function App() {
           });
           addActivity("Native tool loop complete");
         } catch (error) {
+          const stopped = abortController.signal.aborted;
           if (nativeMarkCount > 0) {
             nativeResult = {
               appliedMarkCount: nativeMarkCount,
               note: nativeNote,
             };
-            addActivity("OpenAI stopped after tool pass");
+            addActivity(stopped ? "Collaboration stopped; marks kept" : "OpenAI stopped after tool pass");
           } else {
-            addActivity("OpenAI unavailable; local marks used");
+            addActivity(stopped ? "Collaboration stopped" : "OpenAI unavailable; local marks used");
           }
         }
       }
 
-      if (!nativeResult?.appliedMarkCount) {
+      // Don't fall back to local scribbles when the user deliberately stopped.
+      if (!nativeResult?.appliedMarkCount && !abortController.signal.aborted) {
         await drawLocalCollaboration(ctx, stats);
       }
 
@@ -865,6 +910,7 @@ function App() {
       setCritique(nextCritique);
       addActivity("Collaboration complete");
     } finally {
+      collaborationAbortRef.current = null;
       setCollaborationStep(0);
       setIsCollaborating(false);
     }
@@ -1080,7 +1126,7 @@ function App() {
             </div>
             <div>
               <span className="topbar-label">Cursor</span>
-              <strong>{cursorPoint ? formatNormalizedPoint(cursorPoint) : "x/y"}</strong>
+              <strong ref={cursorReadoutRef}>x/y</strong>
             </div>
             <div>
               <span className="topbar-label">Grid</span>
@@ -1136,12 +1182,17 @@ function App() {
               <Bot aria-hidden="true" size={19} />
               {isThinking ? "Reading squiggle" : "Read Squiggle"}
             </button>
-            <button className="secondary-action" disabled={isCollaborating} onClick={collaborate} type="button">
-              <WandSparkles aria-hidden="true" size={19} />
-              {isCollaborating
-                ? `Tool pass ${collaborationStep || 1}/${collaborationPasses}`
-                : "Reveal Drawing"}
-            </button>
+            {isCollaborating ? (
+              <button className="secondary-action stop-action" onClick={stopCollaboration} type="button">
+                <Square aria-hidden="true" size={17} />
+                {`Stop · pass ${collaborationStep || 1}/${collaborationPasses}`}
+              </button>
+            ) : (
+              <button className="secondary-action" onClick={collaborate} type="button">
+                <WandSparkles aria-hidden="true" size={19} />
+                Reveal Drawing
+              </button>
+            )}
           </div>
         </section>
 
@@ -2090,7 +2141,7 @@ async function buildCanvasFeedbackImages(
   }
 
   return {
-    updatedImageDataUrl: updatedCanvas.toDataURL("image/png"),
+    updatedImageDataUrl: encodeCanvasForModel(updatedCanvas),
     focusCropDataUrl: createCropDataUrl(updatedCanvas, focusBounds, "focus crop"),
     diffCropDataUrl: createCropDataUrl(diffCanvas, focusBounds, "latest marks"),
     focusBounds,
@@ -2139,7 +2190,7 @@ function createCropDataUrl(sourceCanvas: HTMLCanvasElement, bounds: NormalizedBo
   cropCanvas.height = outputHeight;
   const cropContext = cropCanvas.getContext("2d");
 
-  if (!cropContext) return sourceCanvas.toDataURL("image/png");
+  if (!cropContext) return encodeCanvasForModel(sourceCanvas);
 
   cropContext.drawImage(sourceCanvas, rect.x, rect.y, rect.width, rect.height, 0, 0, outputWidth, outputHeight);
   cropContext.strokeStyle = "rgba(255, 79, 163, 0.92)";
@@ -2152,7 +2203,7 @@ function createCropDataUrl(sourceCanvas: HTMLCanvasElement, bounds: NormalizedBo
     12,
   );
 
-  return cropCanvas.toDataURL("image/png");
+  return encodeCanvasForModel(cropCanvas);
 }
 
 function drawNormalizedBoundsOverlay(ctx: CanvasRenderingContext2D, bounds: NormalizedBounds, label: string) {
@@ -2301,6 +2352,7 @@ async function requestOpenAiCollaborationToolLoop({
   maxPasses,
   onPassStart,
   applyDrawingTool,
+  signal,
 }: {
   settings: ApiSettings;
   initialImageDataUrl: string;
@@ -2308,6 +2360,7 @@ async function requestOpenAiCollaborationToolLoop({
   maxPasses: number;
   onPassStart: (pass: number) => void;
   applyDrawingTool: (toolCall: DrawingToolCall, pass: number) => Promise<DrawingToolResult>;
+  signal?: AbortSignal;
 }): Promise<NativeCollaborationResult> {
   if (settings.endpointPath.includes("chat/completions")) {
     return requestChatCompletionsToolLoop({
@@ -2317,6 +2370,7 @@ async function requestOpenAiCollaborationToolLoop({
       maxPasses,
       onPassStart,
       applyDrawingTool,
+      signal,
     });
   }
 
@@ -2327,6 +2381,7 @@ async function requestOpenAiCollaborationToolLoop({
     maxPasses,
     onPassStart,
     applyDrawingTool,
+    signal,
   });
 }
 
@@ -2337,6 +2392,7 @@ async function requestChatCompletionsToolLoop({
   maxPasses,
   onPassStart,
   applyDrawingTool,
+  signal,
 }: {
   settings: ApiSettings;
   initialImageDataUrl: string;
@@ -2344,6 +2400,7 @@ async function requestChatCompletionsToolLoop({
   maxPasses: number;
   onPassStart: (pass: number) => void;
   applyDrawingTool: (toolCall: DrawingToolCall, pass: number) => Promise<DrawingToolResult>;
+  signal?: AbortSignal;
 }): Promise<NativeCollaborationResult> {
   const messages: Array<Record<string, unknown>> = [
     {
@@ -2363,14 +2420,18 @@ async function requestChatCompletionsToolLoop({
 
   for (let pass = 1; pass <= maxPasses; pass += 1) {
     onPassStart(pass);
-    const response = await requestOpenAiRaw(settings, {
-      model: settings.model.trim(),
-      temperature: 0.58,
-      ...completionBudget(settings, 2200),
-      messages,
-      tools: [chatDrawStrokesTool()],
-      tool_choice: "auto",
-    });
+    const response = await requestOpenAiRaw(
+      settings,
+      {
+        model: settings.model.trim(),
+        temperature: 0.58,
+        ...completionBudget(settings, 2200),
+        messages,
+        tools: [chatDrawStrokesTool()],
+        tool_choice: "auto",
+      },
+      signal,
+    );
     const message = extractChatMessage(response);
     const toolCalls = extractChatToolCalls(message);
     messages.push(message);
@@ -2408,19 +2469,23 @@ async function requestChatCompletionsToolLoop({
     }
   }
 
-  const finalResponse = await requestOpenAiRaw(settings, {
-    model: settings.model.trim(),
-    temperature: 0.45,
-    ...completionBudget(settings, 1400),
-    response_format: { type: "json_object" },
-    messages: [
-      ...messages,
-      {
-        role: "user",
-        content: finalCollaborationPrompt(),
-      },
-    ],
-  });
+  const finalResponse = await requestOpenAiRaw(
+    settings,
+    {
+      model: settings.model.trim(),
+      temperature: 0.45,
+      ...completionBudget(settings, 1400),
+      response_format: { type: "json_object" },
+      messages: [
+        ...messages,
+        {
+          role: "user",
+          content: finalCollaborationPrompt(),
+        },
+      ],
+    },
+    signal,
+  );
   const finalMessage = extractChatMessage(finalResponse);
 
   return {
@@ -2437,6 +2502,7 @@ async function requestResponsesToolLoop({
   maxPasses,
   onPassStart,
   applyDrawingTool,
+  signal,
 }: {
   settings: ApiSettings;
   initialImageDataUrl: string;
@@ -2444,6 +2510,7 @@ async function requestResponsesToolLoop({
   maxPasses: number;
   onPassStart: (pass: number) => void;
   applyDrawingTool: (toolCall: DrawingToolCall, pass: number) => Promise<DrawingToolResult>;
+  signal?: AbortSignal;
 }): Promise<NativeCollaborationResult> {
   let previousResponseId: string | undefined;
   let input: Array<Record<string, unknown>> = [
@@ -2460,16 +2527,20 @@ async function requestResponsesToolLoop({
 
   for (let pass = 1; pass <= maxPasses; pass += 1) {
     onPassStart(pass);
-    const response = await requestOpenAiRaw(settings, {
-      model: settings.model.trim(),
-      instructions: collaborationSystemPrompt(),
-      temperature: 0.58,
-      ...responsesCompletionBudget(settings, 2200),
-      input,
-      previous_response_id: previousResponseId,
-      tools: [responsesDrawStrokesTool()],
-      tool_choice: "auto",
-    });
+    const response = await requestOpenAiRaw(
+      settings,
+      {
+        model: settings.model.trim(),
+        instructions: collaborationSystemPrompt(),
+        temperature: 0.58,
+        ...responsesCompletionBudget(settings, 2200),
+        input,
+        previous_response_id: previousResponseId,
+        tools: [responsesDrawStrokesTool()],
+        tool_choice: "auto",
+      },
+      signal,
+    );
     previousResponseId = readResponseId(response) ?? previousResponseId;
 
     const toolCalls = extractResponsesToolCalls(response);
@@ -2504,17 +2575,21 @@ async function requestResponsesToolLoop({
     input = nextInput;
   }
 
-  const finalResponse = await requestOpenAiRaw(settings, {
-    model: settings.model.trim(),
-    instructions: collaborationSystemPrompt(),
-    temperature: 0.45,
-    ...responsesCompletionBudget(settings, 1400),
-    input:
-      input.length > 0
-        ? input
-        : [{ role: "user", content: [{ type: "input_text", text: finalCollaborationPrompt() }] }],
-    previous_response_id: previousResponseId,
-  });
+  const finalResponse = await requestOpenAiRaw(
+    settings,
+    {
+      model: settings.model.trim(),
+      instructions: collaborationSystemPrompt(),
+      temperature: 0.45,
+      ...responsesCompletionBudget(settings, 1400),
+      input:
+        input.length > 0
+          ? input
+          : [{ role: "user", content: [{ type: "input_text", text: finalCollaborationPrompt() }] }],
+      previous_response_id: previousResponseId,
+    },
+    signal,
+  );
 
   return {
     appliedMarkCount,
@@ -2535,19 +2610,38 @@ async function requestOpenAiJson<T>(
   return parseJsonFromText(text) as T;
 }
 
-async function requestOpenAiRaw(settings: ApiSettings, body: Record<string, unknown>): Promise<unknown> {
-  const response = await fetch(buildEndpoint(settings), {
-    method: "POST",
-    headers: buildHeaders(settings),
-    body: JSON.stringify(body),
-  });
+async function requestOpenAiRaw(
+  settings: ApiSettings,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(new Error("OpenAI request timed out")), REQUEST_TIMEOUT_MS);
+  const forwardAbort = () => controller.abort(signal?.reason);
 
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(detail || `OpenAI request failed with ${response.status}`);
+  if (signal) {
+    if (signal.aborted) controller.abort(signal.reason);
+    else signal.addEventListener("abort", forwardAbort, { once: true });
   }
 
-  return (await response.json()) as unknown;
+  try {
+    const response = await fetch(buildEndpoint(settings), {
+      method: "POST",
+      headers: buildHeaders(settings),
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(detail || `OpenAI request failed with ${response.status}`);
+    }
+
+    return (await response.json()) as unknown;
+  } finally {
+    window.clearTimeout(timeout);
+    signal?.removeEventListener("abort", forwardAbort);
+  }
 }
 
 function collaborationSystemPrompt() {
