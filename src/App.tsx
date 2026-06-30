@@ -3,12 +3,14 @@ import {
   Brush,
   Download,
   Eraser,
+  FolderOpen,
   Grid3x3,
   Highlighter,
   KeyRound,
   Palette,
   Pencil,
   Redo2,
+  Save,
   Server,
   Settings,
   Sparkles,
@@ -25,6 +27,11 @@ const DEFAULT_CANVAS_HEIGHT = 720;
 const MODEL_COORDINATE_MAX = 1000;
 const MAX_HISTORY = 28;
 const API_SETTINGS_STORAGE_KEY = "drawassistant-api-settings";
+const PROJECTS_STORAGE_KEY = "drawassistant-projects";
+const AUTOSAVE_STORAGE_KEY = "drawassistant-autosave";
+const MAX_PROJECTS = 24;
+const PROJECT_THUMB_MAX_EDGE = 200;
+const AUTOSAVE_DEBOUNCE_MS = 700;
 const NORMALIZED_MINOR_GRID_SIZE = 100;
 const GRID_X_LABELS = [0, 250, 500, 750, MODEL_COORDINATE_MAX];
 const GRID_Y_LABELS = [0, 250, 500, 750, MODEL_COORDINATE_MAX];
@@ -130,6 +137,20 @@ type ApiSettings = {
   endpointPath: string;
   reasoningEffort: ReasoningEffortSetting;
   maxCompletionTokens: number;
+};
+
+type StoredProject = {
+  id: string;
+  name: string;
+  imageDataUrl: string;
+  background: string;
+  thumbnailDataUrl?: string;
+  updatedAt: number;
+};
+
+type AutosaveSnapshot = {
+  imageDataUrl: string;
+  background: string;
 };
 
 type CollaborationMarkKind =
@@ -354,6 +375,82 @@ function isApiConfigured(settings: ApiSettings) {
   return Boolean(settings.baseUrl.trim() && settings.model.trim() && settings.endpointPath.trim());
 }
 
+function isStoredProject(value: unknown): value is StoredProject {
+  const record = asRecord(value);
+  return Boolean(
+    record &&
+      typeof record.id === "string" &&
+      typeof record.name === "string" &&
+      typeof record.imageDataUrl === "string" &&
+      typeof record.background === "string" &&
+      typeof record.updatedAt === "number",
+  );
+}
+
+function loadStoredProjects(): StoredProject[] {
+  try {
+    const raw = window.localStorage.getItem(PROJECTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isStoredProject).sort((a, b) => b.updatedAt - a.updatedAt);
+  } catch {
+    return [];
+  }
+}
+
+function persistProjects(projects: StoredProject[]): boolean {
+  try {
+    window.localStorage.setItem(PROJECTS_STORAGE_KEY, JSON.stringify(projects));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function loadAutosave(): AutosaveSnapshot | null {
+  try {
+    const raw = window.localStorage.getItem(AUTOSAVE_STORAGE_KEY);
+    if (!raw) return null;
+    const record = asRecord(JSON.parse(raw));
+    if (!record || typeof record.imageDataUrl !== "string") return null;
+    return {
+      imageDataUrl: record.imageDataUrl,
+      background: typeof record.background === "string" ? record.background : "#fff8e8",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function createProjectId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `project-${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+}
+
+function defaultProjectName(count: number) {
+  return `Squiggle ${count + 1}`;
+}
+
+// Small background-composited JPEG preview for the projects list.
+function createThumbnail(canvas: HTMLCanvasElement, backgroundColor: string, maxEdge = PROJECT_THUMB_MAX_EDGE): string {
+  const longestSide = Math.max(canvas.width, canvas.height) || 1;
+  const scale = Math.min(1, maxEdge / longestSide);
+  const thumb = document.createElement("canvas");
+  thumb.width = Math.max(1, Math.round(canvas.width * scale));
+  thumb.height = Math.max(1, Math.round(canvas.height * scale));
+
+  const ctx = thumb.getContext("2d");
+  if (!ctx) return "";
+
+  ctx.fillStyle = backgroundColor;
+  ctx.fillRect(0, 0, thumb.width, thumb.height);
+  ctx.drawImage(canvas, 0, 0, thumb.width, thumb.height);
+  return thumb.toDataURL("image/jpeg", 0.7);
+}
+
 function sampleFromPointerEvent(event: globalThis.PointerEvent, canvas: HTMLCanvasElement): StrokePoint {
   const rect = canvas.getBoundingClientRect();
   const pointerType = event.pointerType || "mouse";
@@ -393,6 +490,8 @@ function App() {
   const historyIndexRef = useRef(0);
   const cursorReadoutRef = useRef<HTMLElement | null>(null);
   const collaborationAbortRef = useRef<AbortController | null>(null);
+  const autosaveTimerRef = useRef<number | null>(null);
+  const autosaveReadyRef = useRef(false);
 
   const [canvasSize, setCanvasSize] = useState<CanvasSize>(() => currentCanvasSize());
   const [tool, setTool] = useState<Tool>("pencil");
@@ -424,6 +523,9 @@ function App() {
   const [collaborationPasses, setCollaborationPasses] = useState(3);
   const [collaborationStep, setCollaborationStep] = useState(0);
   const [apiSettings, setApiSettings] = useState<ApiSettings>(() => loadApiSettings());
+  const [projects, setProjects] = useState<StoredProject[]>(() => loadStoredProjects());
+  const [projectName, setProjectName] = useState("");
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
 
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < historyLength - 1;
@@ -532,17 +634,64 @@ function App() {
     [getContext],
   );
 
+  // Debounced autosave of the live canvas so a reload restores work in progress.
+  const scheduleAutosave = useCallback(() => {
+    if (!autosaveReadyRef.current) return;
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+    }
+
+    autosaveTimerRef.current = window.setTimeout(() => {
+      autosaveTimerRef.current = null;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      try {
+        const payload: AutosaveSnapshot = {
+          imageDataUrl: canvas.toDataURL("image/png"),
+          background,
+        };
+        window.localStorage.setItem(AUTOSAVE_STORAGE_KEY, JSON.stringify(payload));
+      } catch {
+        // Autosave is best-effort; explicit project saves surface quota failures.
+      }
+    }, AUTOSAVE_DEBOUNCE_MS);
+  }, [background]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     resizeCanvasSurface(getViewportCanvasSize(), false);
 
-    const snapshot = canvas.toDataURL("image/png");
-    historyRef.current = [snapshot];
-    historyIndexRef.current = 0;
-    setHistoryLength(1);
-    setHistoryIndex(0);
+    const seedHistoryFromCanvas = () => {
+      const snapshot = canvasRef.current?.toDataURL("image/png");
+      if (!snapshot) return;
+      historyRef.current = [snapshot];
+      historyIndexRef.current = 0;
+      setHistoryLength(1);
+      setHistoryIndex(0);
+      autosaveReadyRef.current = true;
+    };
+
+    const autosave = loadAutosave();
+    if (autosave) {
+      setBackground(autosave.background);
+      const ctx = getContext();
+      const image = new Image();
+      image.onload = () => {
+        if (ctx) {
+          ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+          ctx.drawImage(image, 0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+        }
+        seedHistoryFromCanvas();
+        addActivity("Restored last canvas");
+      };
+      image.onerror = seedHistoryFromCanvas;
+      image.src = autosave.imageDataUrl;
+    } else {
+      seedHistoryFromCanvas();
+    }
 
     let resizeFrame = 0;
     const handleResize = () => {
@@ -557,8 +706,16 @@ function App() {
     return () => {
       window.cancelAnimationFrame(resizeFrame);
       window.removeEventListener("resize", handleResize);
+      if (autosaveTimerRef.current !== null) {
+        window.clearTimeout(autosaveTimerRef.current);
+      }
     };
-  }, [resizeCanvasSurface]);
+  }, [addActivity, getContext, resizeCanvasSurface]);
+
+  // Persist the canvas whenever a new history entry lands or the surface changes.
+  useEffect(() => {
+    scheduleAutosave();
+  }, [historyIndex, historyLength, background, scheduleAutosave]);
 
   const pointFromEvent = useCallback((event: ReactPointerEvent<HTMLCanvasElement>): StrokePoint => {
     return sampleFromPointerEvent(event.nativeEvent, event.currentTarget);
@@ -760,6 +917,87 @@ function App() {
     link.click();
     addActivity("PNG exported");
   }, [addActivity, background]);
+
+  const saveCurrentProject = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const name = projectName.trim() || defaultProjectName(projects.length);
+    const imageDataUrl = canvas.toDataURL("image/png");
+    const thumbnailDataUrl = createThumbnail(canvas, background);
+    const now = Date.now();
+
+    // Update in place when re-saving the loaded project or a same-named one.
+    const existingIndex = projects.findIndex(
+      (project) => project.id === activeProjectId || project.name.toLowerCase() === name.toLowerCase(),
+    );
+
+    let id: string;
+    let next: StoredProject[];
+    if (existingIndex >= 0) {
+      id = projects[existingIndex].id;
+      next = projects.map((project, index) =>
+        index === existingIndex
+          ? { ...project, name, imageDataUrl, thumbnailDataUrl, background, updatedAt: now }
+          : project,
+      );
+    } else {
+      id = createProjectId();
+      next = [{ id, name, imageDataUrl, thumbnailDataUrl, background, updatedAt: now }, ...projects];
+    }
+
+    next = next.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_PROJECTS);
+
+    if (!persistProjects(next)) {
+      addActivity("Save failed: storage full");
+      return;
+    }
+
+    setProjects(next);
+    setActiveProjectId(id);
+    setProjectName(name);
+    addActivity(`Saved "${name}"`);
+  }, [activeProjectId, addActivity, background, projectName, projects]);
+
+  const loadProject = useCallback(
+    (project: StoredProject) => {
+      const ctx = getContext();
+      if (!ctx) return;
+
+      setBackground(project.background);
+      const image = new Image();
+      image.onload = () => {
+        ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+        ctx.drawImage(image, 0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+        const snapshot = canvasRef.current?.toDataURL("image/png");
+        if (snapshot) {
+          historyRef.current = [snapshot];
+          historyIndexRef.current = 0;
+          setHistoryLength(1);
+          setHistoryIndex(0);
+        }
+
+        setActiveProjectId(project.id);
+        setProjectName(project.name);
+        scheduleAutosave();
+        addActivity(`Loaded "${project.name}"`);
+      };
+      image.src = project.imageDataUrl;
+    },
+    [addActivity, getContext, scheduleAutosave],
+  );
+
+  const deleteProject = useCallback(
+    (project: StoredProject) => {
+      const next = projects.filter((item) => item.id !== project.id);
+      persistProjects(next);
+      setProjects(next);
+      if (activeProjectId === project.id) setActiveProjectId(null);
+      addActivity(`Deleted "${project.name}"`);
+    },
+    [activeProjectId, addActivity, projects],
+  );
 
   const getFlattenedCanvasDataUrl = useCallback(
     (options?: { includeGrid?: boolean }) => {
@@ -1031,6 +1269,15 @@ function App() {
                   type="button"
                 />
               ))}
+              <label className="swatch custom-swatch" style={{ backgroundColor: ink }} title="Custom ink color">
+                <input
+                  aria-label="Custom ink color"
+                  onChange={(event) => setInk(event.target.value)}
+                  type="color"
+                  value={/^#[0-9a-f]{6}$/i.test(ink) ? ink : "#64d8c8"}
+                />
+                <Palette aria-hidden="true" size={14} />
+              </label>
             </div>
           </div>
 
@@ -1105,6 +1352,66 @@ function App() {
             <button aria-label="Save" onClick={saveImage} title="Save" type="button">
               <Download aria-hidden="true" size={18} />
             </button>
+          </div>
+
+          <div className="tool-group projects-group">
+            <div className="group-label">
+              <FolderOpen aria-hidden="true" size={16} />
+              Projects
+            </div>
+            <div className="project-save-row">
+              <input
+                aria-label="Project name"
+                className="project-name-input"
+                maxLength={48}
+                onChange={(event) => setProjectName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") saveCurrentProject();
+                }}
+                placeholder="Name this squiggle"
+                type="text"
+                value={projectName}
+              />
+              <button className="project-save-button" onClick={saveCurrentProject} title="Save project" type="button">
+                <Save aria-hidden="true" size={16} />
+                Save
+              </button>
+            </div>
+            {projects.length === 0 ? (
+              <p className="project-empty">Saved squiggles will appear here.</p>
+            ) : (
+              <ul className="project-list">
+                {projects.map((project) => (
+                  <li
+                    className={project.id === activeProjectId ? "project-item active" : "project-item"}
+                    key={project.id}
+                  >
+                    <button
+                      className="project-open"
+                      onClick={() => loadProject(project)}
+                      title={`Load ${project.name}`}
+                      type="button"
+                    >
+                      {project.thumbnailDataUrl ? (
+                        <img alt="" aria-hidden="true" className="project-thumb" src={project.thumbnailDataUrl} />
+                      ) : (
+                        <span className="project-thumb project-thumb-fallback" />
+                      )}
+                      <span className="project-name">{project.name}</span>
+                    </button>
+                    <button
+                      aria-label={`Delete ${project.name}`}
+                      className="project-delete"
+                      onClick={() => deleteProject(project)}
+                      title="Delete project"
+                      type="button"
+                    >
+                      <Trash2 aria-hidden="true" size={15} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </aside>
 
