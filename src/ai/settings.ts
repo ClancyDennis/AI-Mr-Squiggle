@@ -31,6 +31,9 @@ export function loadApiSettings(): ApiSettings {
     endpointPath: import.meta.env.VITE_OPENAI_ENDPOINT_PATH || "chat/completions",
     reasoningEffort: normalizeReasoningEffort(import.meta.env.VITE_OPENAI_REASONING_EFFORT ?? "medium"),
     maxCompletionTokens: normalizeMaxCompletionTokens(import.meta.env.VITE_OPENAI_MAX_COMPLETION_TOKENS),
+    useVision: import.meta.env.VITE_OPENAI_USE_VISION
+      ? import.meta.env.VITE_OPENAI_USE_VISION !== "false"
+      : true,
   };
 
   const rawStored = window.localStorage.getItem(API_SETTINGS_STORAGE_KEY);
@@ -45,6 +48,7 @@ export function loadApiSettings(): ApiSettings {
       endpointPath: typeof stored.endpointPath === "string" ? stored.endpointPath : defaults.endpointPath,
       reasoningEffort: normalizeReasoningEffort(stored.reasoningEffort ?? defaults.reasoningEffort),
       maxCompletionTokens: normalizeMaxCompletionTokens(stored.maxCompletionTokens, defaults.maxCompletionTokens),
+      useVision: typeof stored.useVision === "boolean" ? stored.useVision : defaults.useVision,
     };
   } catch {
     return defaults;

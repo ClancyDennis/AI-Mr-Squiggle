@@ -2,14 +2,25 @@ import { GRID_X_LABELS, GRID_Y_LABELS, NORMALIZED_MINOR_GRID_SIZE } from "../con
 import { normalizeCanvasPoint, normalizedXToModel, normalizedYToModel } from "../lib/coordinates";
 import type { CanvasStats, DrawingToolResult } from "../types";
 
-export function collaborationSystemPrompt() {
+export function collaborationSystemPrompt(useVision: boolean) {
+  if (!useVision) {
+    // Compact prompt for tiny-context local models (e.g. Apple's on-device ~3B).
+    return [
+      "You are Mr Squiggle, a playful AI that finishes a person's squiggle into one small, recognizable drawing.",
+      "You draw by calling draw_strokes with marks on a 0-1000 grid (x right, y down; center 500,500).",
+      "The canvas is given to you as SVG text. After each draw_strokes call, the tool result is the updated canvas as SVG.",
+      "Add only a few clean marks that build ONE clear subject, keep the person's strokes as the star, and stop early once it reads.",
+      "When done, do NOT call a tool. Reply with JSON only: {headline, body, coverage, composition, palette}. Keep body under 120 characters.",
+    ].join("\n");
+  }
+
   return [
     "You are DrawAssistant, a playful AI Mr Squiggle-style drawing collaborator.",
     "Your job is to discover what the user's squiggle could become, then complete the drawing to reveal or improve the character, object, creature, scene, or joke.",
     "Be whimsical, warm, and lightly theatrical, but keep the drawing help concrete and visually useful.",
     "You have one native tool: draw_strokes. It can draw freehand strokes plus higher-level native marks: line, curve, ellipse, rectangle, dot, hatch, highlight, smudge, and star.",
-    "After each draw_strokes call, the tool result is followed by the updated_image.",
-    "Inspect the updated image, and decide whether another draw_strokes call is needed.",
+    "After each draw_strokes call, the tool result is the updated canvas as SVG text, and the updated image is attached too.",
+    "Inspect the updated image and SVG, and decide whether another draw_strokes call is needed.",
     "Before every tool call, form a simple reveal plan internally, then put the visual intent in the tool's intent field.",
     "Think in playful reveal steps: first find the thing hiding in the marks, then add one focused squiggle-improving detail at a time.",
     "Choose pencil, brush, or marker styles to suit the user's drawing texture. Pencil is best for sketchy Apple Pencil marks, marker for translucent emphasis, brush for confident colorful lines.",
@@ -23,8 +34,23 @@ export function collaborationSystemPrompt() {
   ].join("\n");
 }
 
-export function collaborationInitialPrompt(stats: CanvasStats, maxPasses: number, seeds: string[] = []) {
+export function collaborationInitialPrompt(
+  stats: CanvasStats,
+  maxPasses: number,
+  seeds: string[] = [],
+  useVision = true,
+) {
   const seedLine = seeds.length ? [`Inspiration: ${seeds.join(", ")}.`] : [];
+
+  if (!useVision) {
+    // Compact variant for tiny-context local models. The canvas SVG is appended by the loop.
+    return [
+      ...seedLine,
+      "Finish this squiggle into one clear, friendly drawing.",
+      "Coordinates are 0-1000: x=0 left, x=1000 right, y=0 top, y=1000 bottom. Center is 500,500.",
+      `Call draw_strokes up to ${maxPasses} time${maxPasses === 1 ? "" : "s"}, 1-3 small marks each, placed near the existing strokes.`,
+    ].join("\n");
+  }
 
   return [
     ...seedLine,
@@ -69,17 +95,25 @@ export function finalCollaborationPrompt() {
   return "Return final playful JSON only with headline, body, coverage, composition, and palette. Keep body under 180 characters. Do not call any tool.";
 }
 
-export function chatToolResultContent(pass: number, maxPasses: number, result: DrawingToolResult) {
-  return [
-    {
-      type: "text",
-      text: toolResultFollowUpText(pass, maxPasses, result),
-    },
-    {
-      type: "image_url",
-      image_url: { url: result.updatedImageDataUrl },
-    },
-  ];
+export function chatToolResultContent(
+  pass: number,
+  maxPasses: number,
+  result: DrawingToolResult,
+  useVision: boolean,
+) {
+  const text = [
+    toolResultFollowUpText(pass, maxPasses, result),
+    "Current canvas (SVG, 0-1000):",
+    result.canvasText,
+  ].join("\n");
+
+  const content: Array<Record<string, unknown>> = [{ type: "text", text }];
+
+  if (useVision && result.updatedImageDataUrl) {
+    content.push({ type: "image_url", image_url: { url: result.updatedImageDataUrl } });
+  }
+
+  return content;
 }
 
 export function toolResultFollowUpText(pass: number, maxPasses: number, result: DrawingToolResult) {

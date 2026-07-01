@@ -64,31 +64,43 @@ export async function requestGuessVerdict(
 export async function requestOpenAiCollaborationToolLoop({
   settings,
   initialImageDataUrl,
+  initialCanvasText,
   initialStats,
   maxPasses,
   seeds,
+  useVision,
   onPassStart,
   applyDrawingTool,
 }: {
   settings: ApiSettings;
-  initialImageDataUrl: string;
+  initialImageDataUrl?: string;
+  initialCanvasText: string;
   initialStats: CanvasStats;
   maxPasses: number;
   seeds: string[];
+  useVision: boolean;
   onPassStart: (pass: number) => void;
   applyDrawingTool: (toolCall: DrawingToolCall, pass: number) => Promise<DrawingToolResult>;
 }): Promise<NativeCollaborationResult> {
+  const initialText = [
+    collaborationInitialPrompt(initialStats, maxPasses, seeds, useVision),
+    "",
+    "Current canvas (SVG, 0-1000):",
+    initialCanvasText,
+  ].join("\n");
+  const initialContent: Array<Record<string, unknown>> = [{ type: "text", text: initialText }];
+  if (useVision && initialImageDataUrl) {
+    initialContent.push({ type: "image_url", image_url: { url: initialImageDataUrl } });
+  }
+
   const messages: Array<Record<string, unknown>> = [
     {
       role: "system",
-      content: collaborationSystemPrompt(),
+      content: collaborationSystemPrompt(useVision),
     },
     {
       role: "user",
-      content: [
-        { type: "text", text: collaborationInitialPrompt(initialStats, maxPasses, seeds) },
-        { type: "image_url", image_url: { url: initialImageDataUrl } },
-      ],
+      content: initialContent,
     },
   ];
   let appliedMarkCount = 0;
@@ -136,7 +148,7 @@ export async function requestOpenAiCollaborationToolLoop({
     if (latestResult) {
       messages.push({
         role: "user",
-        content: chatToolResultContent(pass, maxPasses, latestResult),
+        content: chatToolResultContent(pass, maxPasses, latestResult, useVision),
       });
     }
   }

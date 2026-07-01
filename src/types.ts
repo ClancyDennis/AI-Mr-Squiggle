@@ -63,6 +63,17 @@ export type ApiSettings = {
   endpointPath: string;
   reasoningEffort: ReasoningEffortSetting;
   maxCompletionTokens: number;
+  // When true, attach the canvas image alongside the SVG text (vision-capable models).
+  // Turn off for text-only local models (e.g. Apple's on-device ~3B).
+  useVision: boolean;
+};
+
+// A finished freehand stroke captured as vectors (normalized 0-1000 coords) so the
+// canvas can be described to the model as text/SVG, not just a raster image.
+export type CapturedStroke = {
+  tool: DrawingTool;
+  color: string;
+  points: Point[];
 };
 
 export type CollaborationMarkKind =
@@ -106,7 +117,10 @@ export type DrawingToolArguments = {
 export type DrawingToolResult = {
   pass: number;
   appliedMarkCount: number;
-  updatedImageDataUrl: string;
+  // Textual (SVG) representation of the whole canvas after this pass — the primary
+  // feedback channel. The image is optional and only present when vision is enabled.
+  canvasText: string;
+  updatedImageDataUrl?: string;
   recentBounds: NormalizedBounds | null;
   stats: CanvasStats;
 };

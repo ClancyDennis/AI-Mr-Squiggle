@@ -886,6 +886,35 @@ canvas {
   cursor: pointer;
 }
 
+.toggle-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.toggle-field span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--label-2);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.toggle-field small {
+  color: var(--label-3);
+  font-size: 0.72rem;
+}
+
+.toggle-field input {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 @media (prefers-color-scheme: dark) {
   .text-field select {
     color-scheme: dark;

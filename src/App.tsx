@@ -42,7 +42,10 @@ import type {
   ApiSettings,
   CanvasSize,
   CanvasStats,
+  CapturedStroke,
+  CollaborationMark,
   Critique,
+  DrawingTool,
   NativeCollaborationResult,
   Point,
   ResultNotice,
@@ -51,7 +54,8 @@ import type {
   Tool,
 } from "./types";
 import { CANVAS_WIDTH, CANVAS_HEIGHT, currentCanvasSize, getViewportCanvasSize, syncCanvasGeometry } from "./lib/canvas-size";
-import { clamp, formatNormalizedPoint, sampleFromPointerEvent, smoothStrokePoint } from "./lib/coordinates";
+import { clamp, formatNormalizedPoint, normalizeCanvasPoint, sampleFromPointerEvent, smoothStrokePoint } from "./lib/coordinates";
+import { describeCanvasAsSvg } from "./ai/canvas-svg";
 import { getCollaborationMarksBounds } from "./lib/bounds";
 import { nameAverageColor } from "./lib/color";
 import { drawInstrumentSegment } from "./canvas/instruments";
@@ -71,6 +75,12 @@ function App() {
   const lastPointRef = useRef<StrokePoint | null>(null);
   const historyRef = useRef<string[]>([]);
   const historyIndexRef = useRef(0);
+  // Vectorized user strokes (normalized 0-1000) so the canvas can be described to the
+  // model as SVG text. vectorHistoryRef mirrors historyRef index-for-index so undo/redo
+  // and clear keep the stroke list in sync with the raster snapshots.
+  const currentStrokesRef = useRef<CapturedStroke[]>([]);
+  const vectorHistoryRef = useRef<CapturedStroke[][]>([[]]);
+  const activeStrokeRef = useRef<CapturedStroke | null>(null);
 
   const [canvasSize, setCanvasSize] = useState<CanvasSize>(() => currentCanvasSize());
   const [tool, setTool] = useState<Tool>("pencil");
@@ -156,14 +166,20 @@ function App() {
 
     if (previous === snapshot) return;
 
-    const next = historyRef.current.slice(0, historyIndexRef.current + 1);
+    const baseIndex = historyIndexRef.current;
+    const next = historyRef.current.slice(0, baseIndex + 1);
     next.push(snapshot);
+    // Mirror the raster history so the vector stroke list stays index-aligned.
+    const nextVectors = vectorHistoryRef.current.slice(0, baseIndex + 1);
+    nextVectors.push([...currentStrokesRef.current]);
 
     if (next.length > MAX_HISTORY) {
       next.shift();
+      nextVectors.shift();
     }
 
     historyRef.current = next;
+    vectorHistoryRef.current = nextVectors;
     historyIndexRef.current = next.length - 1;
     setHistory(next);
     setHistoryIndex(next.length - 1);
@@ -218,6 +234,7 @@ function App() {
         ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
         ctx.drawImage(image, 0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
         historyIndexRef.current = index;
+        currentStrokesRef.current = [...(vectorHistoryRef.current[index] ?? [])];
         setHistoryIndex(index);
       };
       image.src = snapshot;
@@ -234,6 +251,8 @@ function App() {
     const snapshot = canvas.toDataURL("image/png");
     historyRef.current = [snapshot];
     historyIndexRef.current = 0;
+    vectorHistoryRef.current = [[]];
+    currentStrokesRef.current = [];
     setHistory([snapshot]);
     setHistoryIndex(0);
 
@@ -281,6 +300,9 @@ function App() {
     setCursorPoint(point);
     isDrawingRef.current = true;
     lastPointRef.current = point;
+    // Capture the stroke as vectors for the SVG description (eraser isn't representable).
+    activeStrokeRef.current =
+      tool === "eraser" ? null : { tool: tool as DrawingTool, color: ink, points: [normalizeCanvasPoint(point)] };
     drawSegment(point, point);
   };
 
@@ -295,6 +317,7 @@ function App() {
       const point = smoothStrokePoint(lastPointRef.current, rawPoint, strokeSmoothing);
       drawSegment(lastPointRef.current, point);
       lastPointRef.current = point;
+      activeStrokeRef.current?.points.push(normalizeCanvasPoint(point));
     }
 
     setCursorPoint(lastPointRef.current);
@@ -308,6 +331,11 @@ function App() {
     }
     isDrawingRef.current = false;
     lastPointRef.current = null;
+    const stroke = activeStrokeRef.current;
+    if (stroke && stroke.points.length >= 2) {
+      currentStrokesRef.current = [...currentStrokesRef.current, stroke];
+    }
+    activeStrokeRef.current = null;
     commitHistory();
     addActivity(tool === "eraser" ? "Erased a pass" : `${activeToolLabel} stroke added`);
   };
@@ -399,8 +427,11 @@ function App() {
 
   const clearCanvas = useCallback(() => {
     clearMarks();
+    currentStrokesRef.current = [];
     commitHistory();
     setResultNotice(null);
+    setGuessPrompt(null);
+    setGuessOutcome(null);
     setCritique(
       buildCritique({
         coverage: 0,
@@ -581,21 +612,27 @@ function App() {
     const stats = analyzeCanvas();
 
     try {
-      const imageDataUrl = getFlattenedCanvasDataUrl({ includeGrid: true });
+      const useVision = apiSettings.useVision;
+      const imageDataUrl = useVision ? getFlattenedCanvasDataUrl({ includeGrid: true }) : null;
+      // Snapshot the user's strokes; the loop describes the canvas to the model as SVG.
+      const userStrokes = currentStrokesRef.current;
+      const appliedMarks: CollaborationMark[] = [];
       let nativeResult: NativeCollaborationResult | null = null;
       let nativeMarkCount = 0;
       let nativeNote = "The AI added tool-call marks, but stopped before a final critique.";
 
-      if (imageDataUrl && apiConfigured) {
+      if (apiConfigured) {
         const seeds = drawConceptSeeds();
         addActivity(`Inspiration: ${seeds.join(", ")}`);
         try {
           nativeResult = await requestOpenAiCollaborationToolLoop({
             settings: apiSettings,
-            initialImageDataUrl: imageDataUrl,
+            initialImageDataUrl: imageDataUrl ?? undefined,
+            initialCanvasText: describeCanvasAsSvg(userStrokes, []),
             initialStats: stats,
             maxPasses: collaborationPasses,
             seeds,
+            useVision,
             onPassStart: (pass) => {
               setCollaborationStep(pass);
               addActivity(`Tool pass ${pass}`);
@@ -604,22 +641,28 @@ function App() {
               const recentBounds = getCollaborationMarksBounds(toolCall.arguments.marks);
               await drawCollaborationMarks(ctx, toolCall.arguments.marks, { delayMs: 28 });
               const nextStats = analyzeCanvas();
-              const canvas = canvasRef.current;
-              const feedback = canvas
-                ? await buildCanvasFeedbackImages(canvas, background, recentBounds)
-                : null;
+              appliedMarks.push(...toolCall.arguments.marks);
               nativeMarkCount += toolCall.arguments.marks.length;
               nativeNote = toolCall.arguments.intent || toolCall.arguments.note || nativeNote;
 
-              if (!feedback) {
-                throw new Error("Could not capture updated canvas");
+              let updatedImageDataUrl: string | undefined;
+              if (useVision) {
+                const canvas = canvasRef.current;
+                const feedback = canvas
+                  ? await buildCanvasFeedbackImages(canvas, background, recentBounds)
+                  : null;
+                if (!feedback) {
+                  throw new Error("Could not capture updated canvas");
+                }
+                updatedImageDataUrl = feedback.updatedImageDataUrl;
               }
 
               return {
                 pass,
                 appliedMarkCount: toolCall.arguments.marks.length,
-                updatedImageDataUrl: feedback.updatedImageDataUrl,
-                recentBounds: feedback.recentBounds,
+                canvasText: describeCanvasAsSvg(userStrokes, appliedMarks),
+                updatedImageDataUrl,
+                recentBounds,
                 stats: nextStats,
               };
             },
@@ -1312,6 +1355,18 @@ function App() {
                   placeholder="chat/completions"
                   spellCheck={false}
                   value={apiSettings.endpointPath}
+                />
+              </label>
+              <label className="toggle-field">
+                <span>
+                  Send canvas image
+                  <small>Off = text-only SVG, for local models without vision</small>
+                </span>
+                <input
+                  aria-label="Send canvas image to the model"
+                  checked={apiSettings.useVision}
+                  onChange={(event) => updateApiSetting("useVision", event.target.checked)}
+                  type="checkbox"
                 />
               </label>
             </section>
