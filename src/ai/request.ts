@@ -78,12 +78,19 @@ export function completionTokenBudget(settings: ApiSettings, fallbackTokenBudget
   return normalizeMaxCompletionTokens(settings.maxCompletionTokens, fallbackTokenBudget);
 }
 
+// OpenRouter namespaces models as "provider/model" (e.g. "openai/gpt-5.5").
+// Strip the prefix so the reasoning-model checks work for both direct and
+// OpenRouter-routed model names.
+function bareModelName(model: string): string {
+  return model.trim().toLowerCase().replace(/^[a-z0-9._-]+\//, "");
+}
+
 export function usesReasoningBudget(model: string) {
-  return /^(gpt-5|o\d|o[34]-|gpt-5\.)/i.test(model.trim());
+  return /^(gpt-5|o\d|o[34]-)/i.test(bareModelName(model));
 }
 
 export function reasoningEffortForModel(model: string) {
-  const normalized = model.trim().toLowerCase();
+  const normalized = bareModelName(model);
 
   // Original GPT-5 / GPT-5-mini / GPT-5-nano accept "minimal" (the cheapest tier).
   // Newer deployments (gpt-5.4-nano, gpt-5.5, …) reject it; "low" is the smallest
