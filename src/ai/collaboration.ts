@@ -83,7 +83,7 @@ export async function requestOpenAiCollaborationToolLoop({
   applyDrawingTool: (toolCall: DrawingToolCall, pass: number) => Promise<DrawingToolResult>;
 }): Promise<NativeCollaborationResult> {
   const initialText = [
-    collaborationInitialPrompt(initialStats, maxPasses, seeds, useVision),
+    collaborationInitialPrompt(initialStats, maxPasses, useVision),
     "",
     "Current canvas (SVG, 0-1000):",
     initialCanvasText,
@@ -96,7 +96,7 @@ export async function requestOpenAiCollaborationToolLoop({
   const messages: Array<Record<string, unknown>> = [
     {
       role: "system",
-      content: collaborationSystemPrompt(useVision),
+      content: collaborationSystemPrompt(useVision, seeds),
     },
     {
       role: "user",
