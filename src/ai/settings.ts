@@ -23,6 +23,12 @@ export function normalizeMaxCompletionTokens(value: unknown, fallback = DEFAULT_
   return clamp(stepped, MIN_COMPLETION_TOKENS, MAX_COMPLETION_TOKENS);
 }
 
+// Prefer a non-empty stored value; fall back to the default (env). A blank stored
+// string must not shadow the env default, or a stale empty entry forces Local mode.
+function pickStoredString(stored: unknown, fallback: string): string {
+  return typeof stored === "string" && stored.trim() ? stored : fallback;
+}
+
 export function loadApiSettings(): ApiSettings {
   const defaults: ApiSettings = {
     baseUrl: import.meta.env.VITE_OPENAI_BASE_URL || "",
@@ -42,10 +48,10 @@ export function loadApiSettings(): ApiSettings {
   try {
     const stored = JSON.parse(rawStored) as Partial<ApiSettings>;
     return {
-      baseUrl: typeof stored.baseUrl === "string" ? stored.baseUrl : defaults.baseUrl,
-      apiKey: typeof stored.apiKey === "string" ? stored.apiKey : defaults.apiKey,
-      model: typeof stored.model === "string" ? stored.model : defaults.model,
-      endpointPath: typeof stored.endpointPath === "string" ? stored.endpointPath : defaults.endpointPath,
+      baseUrl: pickStoredString(stored.baseUrl, defaults.baseUrl),
+      apiKey: pickStoredString(stored.apiKey, defaults.apiKey),
+      model: pickStoredString(stored.model, defaults.model),
+      endpointPath: pickStoredString(stored.endpointPath, defaults.endpointPath),
       reasoningEffort: normalizeReasoningEffort(stored.reasoningEffort ?? defaults.reasoningEffort),
       maxCompletionTokens: normalizeMaxCompletionTokens(stored.maxCompletionTokens, defaults.maxCompletionTokens),
       useVision: typeof stored.useVision === "boolean" ? stored.useVision : defaults.useVision,

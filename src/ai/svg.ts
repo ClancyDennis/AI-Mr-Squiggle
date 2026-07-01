@@ -1,5 +1,5 @@
 import { MAX_COMPLETION_TOKENS } from "../constants";
-import { completionBudget, requestOpenAiRaw } from "./request";
+import { completionBudget, requestOpenAiRaw, temperatureParams } from "./request";
 import { asRecord, extractModelText, parseJsonFromText } from "./parse";
 import type { ApiSettings, RefinedSvg } from "../types";
 
@@ -36,7 +36,7 @@ export function buildSvgRequestBody(settings: ApiSettings, imageDataUrl: string,
 
   return {
     model: settings.model.trim(),
-    temperature: 0.6,
+    ...temperatureParams(svgSettings, 0.6),
     ...completionBudget(svgSettings, 5000),
     response_format: { type: "json_object" },
     messages: [

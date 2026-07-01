@@ -69,6 +69,13 @@ import { sanitizeCritique } from "./ai/parse";
 import { requestGuessVerdict, requestOpenAiCollaborationToolLoop, requestOpenAiCritique } from "./ai/collaboration";
 import { requestOpenAiSvg, sanitizeSvgMarkup, svgPreviewDocument } from "./ai/svg";
 
+function errorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const trimmed = raw.trim();
+  if (!trimmed) return "unknown error";
+  return trimmed.length > 160 ? `${trimmed.slice(0, 157)}…` : trimmed;
+}
+
 function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const isDrawingRef = useRef(false);
@@ -578,6 +585,7 @@ function App() {
       });
       addActivity("OpenAI critique complete");
     } catch (error) {
+      if (apiConfigured) console.error("[DrawAssistant] OpenAI critique failed:", error);
       const nextCritique = buildCritique(stats);
       setCritique(nextCritique);
       setResultNotice({
@@ -586,7 +594,7 @@ function App() {
         headline: nextCritique.headline,
         body: nextCritique.body,
       });
-      addActivity(apiConfigured ? "OpenAI unavailable; local critic used" : "Local critic complete");
+      addActivity(apiConfigured ? `OpenAI critique failed: ${errorMessage(error)}` : "Local critic complete");
     } finally {
       setIsThinking(false);
     }
@@ -669,14 +677,15 @@ function App() {
           });
           addActivity("Native tool loop complete");
         } catch (error) {
+          console.error("[DrawAssistant] OpenAI collaboration failed:", error);
           if (nativeMarkCount > 0) {
             nativeResult = {
               appliedMarkCount: nativeMarkCount,
               note: nativeNote,
             };
-            addActivity("OpenAI stopped after tool pass");
+            addActivity(`OpenAI stopped after tool pass: ${errorMessage(error)}`);
           } else {
-            addActivity("OpenAI unavailable; local marks used");
+            addActivity(`OpenAI failed: ${errorMessage(error)}`);
           }
         }
       }

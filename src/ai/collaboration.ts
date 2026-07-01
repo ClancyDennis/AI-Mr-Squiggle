@@ -6,7 +6,7 @@ import {
   summarizeStats,
 } from "./prompts";
 import { buildDrawingToolOutput, chatDrawStrokesTool } from "./schemas";
-import { completionBudget, requestOpenAiJson, requestOpenAiRaw } from "./request";
+import { completionBudget, requestOpenAiJson, requestOpenAiRaw, temperatureParams } from "./request";
 import {
   asRecord,
   extractChatMessage,
@@ -110,7 +110,7 @@ export async function requestOpenAiCollaborationToolLoop({
     onPassStart(pass);
     const response = await requestOpenAiRaw(settings, {
       model: settings.model.trim(),
-      temperature: 0.58,
+      ...temperatureParams(settings, 0.58),
       ...completionBudget(settings, 2200),
       messages,
       tools: [chatDrawStrokesTool()],
@@ -155,7 +155,7 @@ export async function requestOpenAiCollaborationToolLoop({
 
   const finalResponse = await requestOpenAiRaw(settings, {
     model: settings.model.trim(),
-    temperature: 0.45,
+    ...temperatureParams(settings, 0.45),
     ...completionBudget(settings, 1400),
     response_format: { type: "json_object" },
     messages: [

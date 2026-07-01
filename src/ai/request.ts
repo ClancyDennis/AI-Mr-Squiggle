@@ -71,12 +71,20 @@ export function usesReasoningBudget(model: string) {
 export function reasoningEffortForModel(model: string) {
   const normalized = model.trim().toLowerCase();
 
-  // This proxy's gpt-5.5 deployment rejects "minimal"; "low" is the smallest accepted effort.
-  if (normalized.startsWith("gpt-5.5")) {
-    return "low";
+  // Original GPT-5 / GPT-5-mini / GPT-5-nano accept "minimal" (the cheapest tier).
+  // Newer deployments (gpt-5.4-nano, gpt-5.5, …) reject it; "low" is the smallest
+  // effort tier they accept.
+  if (normalized === "gpt-5" || normalized.startsWith("gpt-5-")) {
+    return "minimal";
   }
 
-  return "minimal";
+  return "low";
+}
+
+// Reasoning models (gpt-5 family, o-series) reject a custom temperature; they only
+// accept the default. Omit the parameter entirely for those models.
+export function temperatureParams(settings: ApiSettings, value: number): Record<string, number> {
+  return usesReasoningBudget(settings.model) ? {} : { temperature: value };
 }
 
 export function reasoningEffortForSettings(settings: ApiSettings) {
@@ -91,7 +99,7 @@ export function buildRequestBody(settings: ApiSettings, prompt: string, imageDat
 
   return {
     model: settings.model.trim(),
-    temperature: 0.78,
+    ...temperatureParams(settings, 0.78),
     ...completionBudget(settings, 1600),
     response_format: { type: "json_object" },
     messages: [
