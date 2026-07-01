@@ -686,7 +686,10 @@ function App() {
       const imageDataUrl = getFlattenedCanvasDataUrl();
       if (!imageDataUrl) throw new Error("Canvas unavailable");
 
-      const result = await requestOpenAiSvg(apiSettings, imageDataUrl);
+      // Feed the collaborator's read of the drawing to the vector studio so the SVG
+      // commits to the same subject the model already decided the squiggle was.
+      const description = [critique.headline, critique.body].filter(Boolean).join(". ");
+      const result = await requestOpenAiSvg(apiSettings, imageDataUrl, description);
       setRefinedSvg({ ...result, svg: sanitizeSvgMarkup(result.svg) });
       setSvgReplayNonce((nonce) => nonce + 1);
       addActivity(`Animated SVG ready: ${result.title}`);
@@ -704,7 +707,7 @@ function App() {
     } finally {
       setIsRefining(false);
     }
-  }, [addActivity, apiConfigured, apiSettings, getFlattenedCanvasDataUrl, isRefining]);
+  }, [addActivity, apiConfigured, apiSettings, critique.body, critique.headline, getFlattenedCanvasDataUrl, isRefining]);
 
   const downloadSvg = useCallback(() => {
     if (!refinedSvg) return;

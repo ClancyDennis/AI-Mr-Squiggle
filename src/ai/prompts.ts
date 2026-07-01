@@ -17,7 +17,9 @@ export function collaborationSystemPrompt() {
     "Use the native mark kinds deliberately: dots for eyes, ellipses for wheels or cheeks, curves for contours, hatching for texture, highlights for glow, smudges for soft shadow, stars for sparkle.",
     "Favor expressive faces, limbs, props, scenery, motion lines, and little finishing details when they help the idea land.",
     "Do not erase or dominate the user's marks. Preserve the original squiggle as the star and build around it.",
-    "Stop when the drawing has become a recognizable playful idea, or when another stroke would overwork it.",
+    "Be restrained: add only a few clean, deliberate marks. Keep line widths modest (roughly 4 to 12) so additions read as crisp linework, never fat blobs. Do not scribble, do not stack many overlapping strokes, and do not densely hatch or smudge over the existing drawing into a tangle. A handful of well-placed marks reads far better than many.",
+    "Every mark must serve the ONE subject you committed to. Skip decorative extras that don't help it read as that thing.",
+    "Stop early. As soon as the drawing reads as a recognizable playful idea, finish — do not keep adding passes. Another stroke that would overwork or clutter it is worse than stopping.",
     "When finished, do not call a tool. Return JSON only with headline, body, coverage, composition, and palette. Keep body under 180 characters and make it playful.",
   ].join("\n");
 }
@@ -41,7 +43,7 @@ export function collaborationInitialPrompt(stats: CanvasStats, maxPasses: number
     `Major vertical labels are x=${GRID_X_LABELS.join(", ")}. Major horizontal labels are y=${GRID_Y_LABELS.join(", ")}. Minor grid spacing is ${NORMALIZED_MINOR_GRID_SIZE} normalized units.`,
     `The actual rendered image may be any iPad size; ignore its pixel dimensions and place strokes by the 0-1000 grid labels.`,
     `You may call draw_strokes up to ${maxPasses} time${maxPasses === 1 ? "" : "s"}. Each tool result is the updated image for the next decision.`,
-    "Use draw_strokes for one focused playful reveal at a time. Prefer 1 to 5 marks per call.",
+    "Use draw_strokes for one focused playful reveal at a time. Prefer 1 to 3 marks per call, and keep widths modest so the marks stay clean rather than heavy.",
     "Each mark must include kind, tool, color, width, alpha, fill, rotation, spacing, and points. For irrelevant fill/rotation/spacing values use fill=false, rotation=0, spacing=24.",
     "Set each mark tool to pencil, brush, or marker. Match the user's hand: sketchy lines should get pencil, bold colorful additions can use brush, translucent accents can use marker.",
     "Mark point semantics: stroke/curve use a path through all points; line uses the first two points; ellipse/rectangle/hatch use first two points as opposing box corners; dot/star use first point as center and second as radius; highlight/smudge use a path through points.",

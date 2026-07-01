@@ -6,8 +6,12 @@ import type { ApiSettings, RefinedSvg } from "../types";
 // Ask the model to redraw the canvas as a single, self-contained, animated SVG.
 // Reuses the existing image-in / text-out plumbing; the only differences from the
 // critique path are a vector-focused system prompt and a roomier token budget.
-export async function requestOpenAiSvg(settings: ApiSettings, imageDataUrl: string): Promise<RefinedSvg> {
-  const json = await requestOpenAiRaw(settings, buildSvgRequestBody(settings, imageDataUrl));
+export async function requestOpenAiSvg(
+  settings: ApiSettings,
+  imageDataUrl: string,
+  description = "",
+): Promise<RefinedSvg> {
+  const json = await requestOpenAiRaw(settings, buildSvgRequestBody(settings, imageDataUrl, description));
   const parsed = asRecord(parseJsonFromText(extractModelText(json)));
   const svg = typeof parsed?.svg === "string" ? parsed.svg : "";
 
@@ -22,7 +26,7 @@ export async function requestOpenAiSvg(settings: ApiSettings, imageDataUrl: stri
   };
 }
 
-export function buildSvgRequestBody(settings: ApiSettings, imageDataUrl: string) {
+export function buildSvgRequestBody(settings: ApiSettings, imageDataUrl: string, description = "") {
   const isChatCompletions = settings.endpointPath.includes("chat/completions");
   // Give SVG room to breathe even if the user's slider is low, without overriding a
   // higher manual setting.
@@ -42,7 +46,7 @@ export function buildSvgRequestBody(settings: ApiSettings, imageDataUrl: string)
         {
           role: "user",
           content: [
-            { type: "text", text: svgUserPrompt() },
+            { type: "text", text: svgUserPrompt(description) },
             { type: "image_url", image_url: { url: imageDataUrl } },
           ],
         },
@@ -59,7 +63,7 @@ export function buildSvgRequestBody(settings: ApiSettings, imageDataUrl: string)
       {
         role: "user",
         content: [
-          { type: "input_text", text: svgUserPrompt() },
+          { type: "input_text", text: svgUserPrompt(description) },
           { type: "input_image", image_url: imageDataUrl },
         ],
       },
@@ -79,14 +83,23 @@ export function svgSystemPrompt() {
   return "You are DrawAssistant's vector studio. You turn rough sketches into clean, charming, animated SVG illustrations. Return valid JSON only.";
 }
 
-export function svgUserPrompt() {
+export function svgUserPrompt(description = "") {
+  const descriptionLines = description.trim()
+    ? [
+        `The collaborator who worked on this sketch described it as: "${description.trim()}".`,
+        "Treat that description as the intended subject: make the refined illustration clearly read as that thing. If the raw marks are ambiguous, let the description settle what it depicts.",
+      ]
+    : [];
+
   return [
     "Here is a hand-drawn sketch. Redraw it as one refined, self-contained, animated SVG that captures what the sketch wants to be: cleaner and more characterful than the original, but clearly the same idea and composition.",
+    ...descriptionLines,
     "Hard requirements for the svg string:",
     '- Root must be <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"> with NO width or height attributes.',
     "- Fully self-contained: inline shapes, paths, and gradients only, plus a single inline <style> block.",
     "- Forbidden: <script>, <foreignObject>, <image>, <use>, any on* event handlers, and any external URL, font, or href (internal #id references for gradients/filters are fine).",
-    "- Animate it. Put CSS @keyframes in the <style> block and/or use SMIL <animate>/<animateTransform>. Begin with a 'draw-on' reveal (animate stroke-dashoffset from the full path length down to 0 on the main outlines), then settle into a gentle looping idle motion such as a bob, sway, pulse, blink, or sparkle.",
+    "- Animate the FINISHED illustration, not the act of drawing it. The complete illustration must be fully drawn and visible from the very first frame. Do NOT do a 'draw-on' reveal: no stroke-dashoffset drawing-on, no fading or wiping the outlines in. Every shape stays present the whole time.",
+    "- Put CSS @keyframes in the <style> block and/or use SMIL <animate>/<animateTransform> to give the fully-drawn figure a gentle, continuously looping idle motion such as a bob, sway, pulse, breathe, blink, or sparkle. Prefer animating transform/opacity of whole parts over animating stroke-dashoffset.",
     "- Keep it tasteful and light: aim for fewer than ~40 elements and a loop of about 4-8 seconds. Reuse the sketch's colors where it makes sense.",
     "Respond with JSON only in the shape { \"title\": string, \"summary\": string, \"svg\": string }. title is 2-4 words. summary is one playful sentence under 120 characters. svg is the complete <svg>...</svg> markup.",
   ].join("\n");
