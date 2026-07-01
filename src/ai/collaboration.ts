@@ -115,7 +115,7 @@ export async function requestOpenAiCollaborationToolLoop({
       {
         model: settings.model.trim(),
         ...temperatureParams(settings, 0.58),
-        ...completionBudget(settings, 2200),
+        ...completionBudget(settings, 2200, { omitReasoningEffort: true }),
         messages,
         tools: [chatDrawStrokesTool()],
         tool_choice: "auto",

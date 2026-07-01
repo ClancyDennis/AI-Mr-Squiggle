@@ -50,10 +50,19 @@ export function buildHeaders(settings: ApiSettings) {
   return headers;
 }
 
-export function completionBudget(settings: ApiSettings, tokenBudget: number): Record<string, unknown> {
+export function completionBudget(
+  settings: ApiSettings,
+  tokenBudget: number,
+  options?: { omitReasoningEffort?: boolean },
+): Record<string, unknown> {
   const budget = completionTokenBudget(settings, tokenBudget);
 
   if (usesReasoningBudget(settings.model)) {
+    // gpt-5.x on /chat/completions rejects reasoning_effort alongside function
+    // tools ("use /v1/responses instead"), so tool-calling callers omit it.
+    if (options?.omitReasoningEffort) {
+      return { max_completion_tokens: budget };
+    }
     return {
       max_completion_tokens: budget,
       reasoning_effort: reasoningEffortForSettings(settings),
