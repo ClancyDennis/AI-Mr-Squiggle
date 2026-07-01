@@ -68,6 +68,16 @@ import { drawConceptSeeds } from "./ai/concept-seeds";
 import { sanitizeCritique } from "./ai/parse";
 import { requestGuessVerdict, requestOpenAiCollaborationToolLoop, requestOpenAiCritique } from "./ai/collaboration";
 import { requestOpenAiSvg, sanitizeSvgMarkup, svgPreviewDocument } from "./ai/svg";
+import {
+  CUSTOM_MODEL_OPTION,
+  PROVIDERS,
+  defaultModelPresets,
+  detectProviderFromBaseUrl,
+  detectProviderFromKey,
+} from "./ai/providers";
+import { buildAuthUrl, createPkce, exchangeCodeForKey } from "./openrouter";
+import { getStoredApiKey, setStoredApiKey } from "./secureStorage";
+import { isNative, onDeepLink, openExternal, readClipboardText } from "./native";
 
 function errorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
@@ -124,6 +134,12 @@ function App() {
   const [collaborationPasses, setCollaborationPasses] = useState(3);
   const [collaborationStep, setCollaborationStep] = useState(0);
   const [apiSettings, setApiSettings] = useState<ApiSettings>(() => loadApiSettings());
+  const [modelCustom, setModelCustom] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [connState, setConnState] = useState<{ status: "idle" | "testing" | "ok" | "error"; message: string }>({
+    status: "idle",
+    message: "",
+  });
   const [guessPrompt, setGuessPrompt] = useState<{ headline: string; body: string } | null>(null);
   const [guessText, setGuessText] = useState("");
   const [isJudging, setIsJudging] = useState(false);
@@ -160,9 +176,156 @@ function App() {
     setApiSettings((current) => ({ ...current, [key]: value }));
   }, []);
 
+  // Paste-key polish: a recognized key auto-fills base URL, endpoint, and a model.
+  const applyApiKey = useCallback(
+    (rawKey: string) => {
+      const key = rawKey.trim();
+      setConnState({ status: "idle", message: "" });
+      const provider = detectProviderFromKey(key);
+      if (!provider) {
+        updateApiSetting("apiKey", key);
+        return;
+      }
+      setModelCustom(false);
+      setApiSettings((current) => ({
+        ...current,
+        apiKey: key,
+        baseUrl: provider.baseUrl,
+        endpointPath: provider.endpointPath,
+        model: provider.models.includes(current.model) ? current.model : provider.defaultModel,
+      }));
+    },
+    [updateApiSetting],
+  );
+
+  const pasteApiKey = useCallback(async () => {
+    try {
+      const text = await readClipboardText();
+      if (text.trim()) applyApiKey(text);
+    } catch {
+      setConnState({ status: "error", message: "Clipboard unavailable — paste into the field instead." });
+    }
+  }, [applyApiKey]);
+
+  const testConnection = useCallback(async () => {
+    const base = apiSettings.baseUrl.trim().replace(/\/+$/, "");
+    if (!base) {
+      setConnState({ status: "error", message: "Add a base URL first." });
+      return;
+    }
+    setConnState({ status: "testing", message: "Testing…" });
+    try {
+      const headers: Record<string, string> = {};
+      if (apiSettings.apiKey.trim()) headers.Authorization = `Bearer ${apiSettings.apiKey.trim()}`;
+      const response = await fetch(`${base}/models`, { headers });
+      if (response.ok) {
+        setConnState({ status: "ok", message: `Connected · ${apiSettings.model.trim() || "model"} ready` });
+      } else {
+        const detail = await response.text().catch(() => "");
+        setConnState({ status: "error", message: `${response.status}: ${errorMessage(detail || response.statusText)}` });
+      }
+    } catch (error) {
+      setConnState({ status: "error", message: errorMessage(error) });
+    }
+  }, [apiSettings.apiKey, apiSettings.baseUrl, apiSettings.model]);
+
+  const oauthCallbackUrl = useCallback(() => {
+    if (isNative()) return "drawassistant://auth/callback";
+    return `${window.location.origin}${window.location.pathname}`;
+  }, []);
+
+  const resumeOpenRouter = useCallback(
+    async (code: string) => {
+      const verifier = window.sessionStorage.getItem("openrouter_verifier");
+      window.sessionStorage.removeItem("openrouter_verifier");
+      if (!verifier) return;
+      try {
+        const key = await exchangeCodeForKey(code, verifier);
+        applyApiKey(key);
+        addActivity("OpenRouter connected");
+        setConnState({ status: "ok", message: "Connected · key stored on device" });
+      } catch (error) {
+        setConnState({ status: "error", message: errorMessage(error) });
+      } finally {
+        setConnecting(false);
+      }
+    },
+    [applyApiKey, addActivity],
+  );
+
+  const connectOpenRouter = useCallback(async () => {
+    setConnState({ status: "idle", message: "" });
+    setConnecting(true);
+    try {
+      const { verifier, challenge } = await createPkce();
+      window.sessionStorage.setItem("openrouter_verifier", verifier);
+      const url = buildAuthUrl(oauthCallbackUrl(), challenge);
+      if (isNative()) {
+        await openExternal(url);
+        setConnecting(false);
+      } else {
+        window.location.assign(url);
+      }
+    } catch (error) {
+      setConnecting(false);
+      setConnState({ status: "error", message: errorMessage(error) });
+    }
+  }, [oauthCallbackUrl]);
+
+  // Web callback: resume when we return with ?code=.
   useEffect(() => {
-    window.localStorage.setItem(API_SETTINGS_STORAGE_KEY, JSON.stringify(apiSettings));
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    if (!code) return;
+    window.history.replaceState({}, "", window.location.pathname);
+    void resumeOpenRouter(code);
+  }, [resumeOpenRouter]);
+
+  // Native callback: resume when the OAuth redirect arrives as a deep link.
+  useEffect(() => {
+    let unlisten = () => {};
+    void onDeepLink((url) => {
+      try {
+        const code = new URL(url).searchParams.get("code");
+        if (code) void resumeOpenRouter(code);
+      } catch {
+        // ignore malformed deep links
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten();
+  }, [resumeOpenRouter]);
+
+  const detectedProvider = detectProviderFromKey(apiSettings.apiKey) ?? detectProviderFromBaseUrl(apiSettings.baseUrl);
+  const currentModelPresets = detectedProvider ? detectedProvider.models : defaultModelPresets;
+
+  // Persist everything EXCEPT the API key to localStorage. The key is a secret,
+  // so it goes through secureStorage (Keychain on native, localStorage fallback).
+  useEffect(() => {
+    const { apiKey: _apiKey, ...rest } = apiSettings;
+    window.localStorage.setItem(API_SETTINGS_STORAGE_KEY, JSON.stringify(rest));
   }, [apiSettings]);
+
+  useEffect(() => {
+    void setStoredApiKey(apiSettings.apiKey.trim());
+  }, [apiSettings.apiKey]);
+
+  // On mount, prefer a key already in secure storage; also migrates an existing
+  // user's key out of the old settings blob (seeds state -> the effect above
+  // writes it to secureStorage -> the blob persists without it from here on).
+  useEffect(() => {
+    let cancelled = false;
+    void getStoredApiKey().then((stored) => {
+      if (!cancelled && stored && stored !== apiSettings.apiKey) {
+        setApiSettings((current) => ({ ...current, apiKey: stored }));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const commitHistory = useCallback(() => {
     const canvas = canvasRef.current;
@@ -1321,6 +1484,11 @@ function App() {
                 <Server aria-hidden="true" size={17} />
                 API
               </div>
+              <button className="connect-openrouter" disabled={connecting} onClick={connectOpenRouter} type="button">
+                <Sparkles aria-hidden="true" size={16} />
+                {connecting ? "Connecting…" : "Connect OpenRouter"}
+              </button>
+              <span className="field-hint">One tap — sign in, no key to copy. Or enter a key manually below.</span>
               <label className="text-field">
                 <span>Base URL</span>
                 <input
@@ -1333,29 +1501,89 @@ function App() {
                 />
               </label>
               <label className="text-field">
-                <span>API Key</span>
+                <span>
+                  API Key
+                  {detectedProvider ? <em className="provider-badge">{detectedProvider.label} detected</em> : null}
+                </span>
                 <div className="input-with-icon">
                   <KeyRound aria-hidden="true" size={16} />
                   <input
                     autoComplete="off"
-                    onChange={(event) => updateApiSetting("apiKey", event.target.value)}
-                    placeholder="sk-..."
+                    onChange={(event) => applyApiKey(event.target.value)}
+                    placeholder="sk-… or sk-or-…"
                     spellCheck={false}
                     type="password"
                     value={apiSettings.apiKey}
                   />
+                  <button className="inline-paste" onClick={pasteApiKey} title="Paste from clipboard" type="button">
+                    Paste
+                  </button>
                 </div>
+                <span className="field-hint">
+                  Your key stays on this device. Get one:{" "}
+                  <a
+                    href={PROVIDERS.openrouter.keysUrl}
+                    onClick={(event) => {
+                      if (isNative()) {
+                        event.preventDefault();
+                        void openExternal(PROVIDERS.openrouter.keysUrl);
+                      }
+                    }}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    OpenRouter
+                  </a>{" "}
+                  ·{" "}
+                  <a
+                    href={PROVIDERS.openai.keysUrl}
+                    onClick={(event) => {
+                      if (isNative()) {
+                        event.preventDefault();
+                        void openExternal(PROVIDERS.openai.keysUrl);
+                      }
+                    }}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    OpenAI
+                  </a>
+                </span>
               </label>
               <label className="text-field">
                 <span>Model</span>
-                <input
-                  autoComplete="off"
-                  onChange={(event) => updateApiSetting("model", event.target.value)}
-                  placeholder="gpt-4o-mini"
-                  spellCheck={false}
-                  value={apiSettings.model}
-                />
+                <select
+                  aria-label="Model"
+                  onChange={(event) => {
+                    if (event.target.value === CUSTOM_MODEL_OPTION) {
+                      setModelCustom(true);
+                    } else {
+                      setModelCustom(false);
+                      updateApiSetting("model", event.target.value);
+                    }
+                  }}
+                  value={modelCustom || !currentModelPresets.includes(apiSettings.model) ? CUSTOM_MODEL_OPTION : apiSettings.model}
+                >
+                  {currentModelPresets.map((preset) => (
+                    <option key={preset} value={preset}>
+                      {preset}
+                    </option>
+                  ))}
+                  <option value={CUSTOM_MODEL_OPTION}>Custom…</option>
+                </select>
               </label>
+              {modelCustom || !currentModelPresets.includes(apiSettings.model) ? (
+                <label className="text-field">
+                  <span>Custom model</span>
+                  <input
+                    autoComplete="off"
+                    onChange={(event) => updateApiSetting("model", event.target.value)}
+                    placeholder="model-name"
+                    spellCheck={false}
+                    value={apiSettings.model}
+                  />
+                </label>
+              ) : null}
               <label className="text-field">
                 <span>Endpoint</span>
                 <input
@@ -1378,6 +1606,22 @@ function App() {
                   type="checkbox"
                 />
               </label>
+              <div className="connection-test">
+                <button
+                  className="test-connection"
+                  disabled={connState.status === "testing"}
+                  onClick={testConnection}
+                  type="button"
+                >
+                  {connState.status === "testing" ? "Testing…" : "Test connection"}
+                </button>
+                {connState.status !== "idle" && connState.status !== "testing" ? (
+                  <span className={connState.status === "ok" ? "conn-status ok" : "conn-status error"}>
+                    {connState.status === "ok" ? "✓ " : "✗ "}
+                    {connState.message}
+                  </span>
+                ) : null}
+              </div>
             </section>
           ) : null}
 

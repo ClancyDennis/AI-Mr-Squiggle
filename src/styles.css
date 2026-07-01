@@ -1477,3 +1477,121 @@ canvas {
     min-height: 32px;
   }
 }
+
+/* --- BYOK / API onboarding ----------------------------------------------- */
+
+.connect-openrouter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  border-radius: var(--radius-control);
+  color: var(--on-accent);
+  background: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+
+.connect-openrouter:hover {
+  background: var(--accent-strong);
+}
+
+.connect-openrouter:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.provider-badge {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
+.input-with-icon {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.input-with-icon input {
+  flex: 1 1 auto;
+}
+
+.inline-paste {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: var(--radius-inner);
+  color: var(--label);
+  background: var(--fill);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.inline-paste:hover {
+  background: var(--fill-hover);
+}
+
+.field-hint {
+  color: var(--label-2);
+  font-size: 0.72rem;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.field-hint a {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.connection-test {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.test-connection {
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: var(--radius-control);
+  color: var(--label);
+  background: var(--fill);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.test-connection:hover {
+  background: var(--fill-hover);
+}
+
+.test-connection:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.conn-status {
+  font-size: 0.74rem;
+  font-weight: 500;
+}
+
+.conn-status.ok {
+  color: var(--accent-strong);
+}
+
+.conn-status.error {
+  color: #e0533f;
+}
