@@ -593,7 +593,7 @@ function App() {
               const nextStats = analyzeCanvas();
               const canvas = canvasRef.current;
               const feedback = canvas
-                ? await buildCanvasFeedbackImages(canvas, background, toolCall.arguments.marks, recentBounds)
+                ? await buildCanvasFeedbackImages(canvas, background, recentBounds)
                 : null;
               nativeMarkCount += toolCall.arguments.marks.length;
               nativeNote = toolCall.arguments.intent || toolCall.arguments.note || nativeNote;
@@ -606,9 +606,6 @@ function App() {
                 pass,
                 appliedMarkCount: toolCall.arguments.marks.length,
                 updatedImageDataUrl: feedback.updatedImageDataUrl,
-                focusCropDataUrl: feedback.focusCropDataUrl,
-                diffCropDataUrl: feedback.diffCropDataUrl,
-                focusBounds: feedback.focusBounds,
                 recentBounds: feedback.recentBounds,
                 stats: nextStats,
               };

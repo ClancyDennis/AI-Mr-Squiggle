@@ -107,9 +107,6 @@ export type DrawingToolResult = {
   pass: number;
   appliedMarkCount: number;
   updatedImageDataUrl: string;
-  focusCropDataUrl: string;
-  diffCropDataUrl: string;
-  focusBounds: NormalizedBounds;
   recentBounds: NormalizedBounds | null;
   stats: CanvasStats;
 };
@@ -139,9 +136,6 @@ export type CollaborationMarkRenderOptions = {
 
 export type CanvasFeedbackImages = {
   updatedImageDataUrl: string;
-  focusCropDataUrl: string;
-  diffCropDataUrl: string;
-  focusBounds: NormalizedBounds;
   recentBounds: NormalizedBounds | null;
 };
 

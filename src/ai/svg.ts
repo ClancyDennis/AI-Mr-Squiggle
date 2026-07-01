@@ -1,5 +1,5 @@
 import { MAX_COMPLETION_TOKENS } from "../constants";
-import { completionBudget, responsesCompletionBudget, requestOpenAiRaw } from "./request";
+import { completionBudget, requestOpenAiRaw } from "./request";
 import { asRecord, extractModelText, parseJsonFromText } from "./parse";
 import type { ApiSettings, RefinedSvg } from "../types";
 
@@ -27,7 +27,6 @@ export async function requestOpenAiSvg(
 }
 
 export function buildSvgRequestBody(settings: ApiSettings, imageDataUrl: string, description = "") {
-  const isChatCompletions = settings.endpointPath.includes("chat/completions");
   // Give SVG room to breathe even if the user's slider is low, without overriding a
   // higher manual setting.
   const svgSettings: ApiSettings = {
@@ -35,47 +34,21 @@ export function buildSvgRequestBody(settings: ApiSettings, imageDataUrl: string,
     maxCompletionTokens: Math.min(MAX_COMPLETION_TOKENS, Math.max(5000, settings.maxCompletionTokens)),
   };
 
-  if (isChatCompletions) {
-    return {
-      model: settings.model.trim(),
-      temperature: 0.6,
-      ...completionBudget(svgSettings, 5000),
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: svgSystemPrompt() },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: svgUserPrompt(description) },
-            { type: "image_url", image_url: { url: imageDataUrl } },
-          ],
-        },
-      ],
-    };
-  }
-
   return {
     model: settings.model.trim(),
-    instructions: svgSystemPrompt(),
     temperature: 0.6,
-    ...responsesCompletionBudget(svgSettings, 5000),
-    input: [
+    ...completionBudget(svgSettings, 5000),
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: svgSystemPrompt() },
       {
         role: "user",
         content: [
-          { type: "input_text", text: svgUserPrompt(description) },
-          { type: "input_image", image_url: imageDataUrl },
+          { type: "text", text: svgUserPrompt(description) },
+          { type: "image_url", image_url: { url: imageDataUrl } },
         ],
       },
     ],
-    text: {
-      format: {
-        type: "json_schema",
-        name: "refined_svg",
-        strict: true,
-        schema: refineSvgSchema(),
-      },
-    },
   };
 }
 
@@ -103,19 +76,6 @@ export function svgUserPrompt(description = "") {
     "- Keep it tasteful and light: aim for fewer than ~40 elements and a loop of about 4-8 seconds. Reuse the sketch's colors where it makes sense.",
     "Respond with JSON only in the shape { \"title\": string, \"summary\": string, \"svg\": string }. title is 2-4 words. summary is one playful sentence under 120 characters. svg is the complete <svg>...</svg> markup.",
   ].join("\n");
-}
-
-export function refineSvgSchema(): Record<string, unknown> {
-  return {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      title: { type: "string" },
-      summary: { type: "string" },
-      svg: { type: "string" },
-    },
-    required: ["title", "summary", "svg"],
-  };
 }
 
 // Defense in depth: even though we render the SVG inside a locked-down sandboxed

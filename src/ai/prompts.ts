@@ -5,12 +5,11 @@ import type { CanvasStats, DrawingToolResult } from "../types";
 export function collaborationSystemPrompt() {
   return [
     "You are DrawAssistant, a playful AI Mr Squiggle-style drawing collaborator.",
-    "Your job is to discover what the user's squiggle could become, then add a few charming marks that reveal that hidden character, object, creature, scene, or joke.",
+    "Your job is to discover what the user's squiggle could become, then complete the drawing to reveal or improve the character, object, creature, scene, or joke.",
     "Be whimsical, warm, and lightly theatrical, but keep the drawing help concrete and visually useful.",
-    "Range widely — do not default to the same go-to animal every time. The user message may include a short 'inspiration:' line of random words; let them gently jog you off the obvious path if they spark something, but never force them in. The squiggle's own shape always leads.",
     "You have one native tool: draw_strokes. It can draw freehand strokes plus higher-level native marks: line, curve, ellipse, rectangle, dot, hatch, highlight, smudge, and star.",
-    "After each draw_strokes call, the tool result is followed by three vision inputs: updated_image, focus_crop_image, and diff_crop_image. The focus crop is zoomed to the latest edit area. The diff crop repeats your latest marks in hot pink so you can correct placement.",
-    "Inspect the updated image, focus crop, and diff crop before deciding whether another draw_strokes call is needed.",
+    "After each draw_strokes call, the tool result is followed by the updated_image.",
+    "Inspect the updated image, and decide whether another draw_strokes call is needed.",
     "Before every tool call, form a simple reveal plan internally, then put the visual intent in the tool's intent field.",
     "Think in playful reveal steps: first find the thing hiding in the marks, then add one focused squiggle-improving detail at a time.",
     "Choose pencil, brush, or marker styles to suit the user's drawing texture. Pencil is best for sketchy Apple Pencil marks, marker for translucent emphasis, brush for confident colorful lines.",
@@ -51,18 +50,17 @@ export function followUpPrompt(pass: number, maxPasses: number, stats: CanvasSta
 
   if (remaining <= 0) {
     return [
-      "That draw_strokes tool result is now the current canvas.",
-      "Use the focus crop and hot-pink diff crop to check whether your latest marks landed at the intended normalized coordinates.",
+      "The attached updated_image is now the current canvas.",
+      "Check whether your latest marks landed at the intended normalized coordinates.",
       "The pass limit has been reached. Return final playful JSON only with headline, body, coverage, composition, and palette.",
       `Updated canvas stats: ${JSON.stringify(summarizeStats(stats))}`,
     ].join("\n");
   }
 
   return [
-    "That draw_strokes tool result is now the current canvas.",
+    "The attached updated_image is now the current canvas.",
     `You have ${remaining} remaining tool call${remaining === 1 ? "" : "s"}.`,
-    "Use the focus crop and hot-pink diff crop to check whether your latest marks landed at the intended normalized coordinates.",
-    "Inspect the updated image. Either call draw_strokes again for one focused playful reveal, or stop and return final JSON only.",
+    "Inspect the updated image and check whether your latest marks landed at the intended normalized coordinates. Either call draw_strokes again for one focused playful reveal, or stop and return final JSON only.",
     `Updated canvas stats: ${JSON.stringify(summarizeStats(stats))}`,
   ].join("\n");
 }
@@ -81,32 +79,17 @@ export function chatToolResultContent(pass: number, maxPasses: number, result: D
       type: "image_url",
       image_url: { url: result.updatedImageDataUrl },
     },
-    {
-      type: "image_url",
-      image_url: { url: result.focusCropDataUrl },
-    },
-    {
-      type: "image_url",
-      image_url: { url: result.diffCropDataUrl },
-    },
-  ];
-}
-
-export function responsesToolResultContent(pass: number, maxPasses: number, result: DrawingToolResult) {
-  return [
-    { type: "input_text", text: toolResultFollowUpText(pass, maxPasses, result) },
-    { type: "input_image", image_url: result.updatedImageDataUrl },
-    { type: "input_image", image_url: result.focusCropDataUrl },
-    { type: "input_image", image_url: result.diffCropDataUrl },
   ];
 }
 
 export function toolResultFollowUpText(pass: number, maxPasses: number, result: DrawingToolResult) {
-  return [
-    followUpPrompt(pass, maxPasses, result.stats),
-    `Latest focus crop bounds: x ${Math.round(result.focusBounds.minX)}-${Math.round(result.focusBounds.maxX)}, y ${Math.round(result.focusBounds.minY)}-${Math.round(result.focusBounds.maxY)}.`,
-    "Images are ordered as full current canvas, focus crop, then hot-pink latest-mark diff crop.",
-  ].join("\n");
+  const boundsLine = result.recentBounds
+    ? [
+        `Your latest marks are around x ${Math.round(result.recentBounds.minX)}-${Math.round(result.recentBounds.maxX)}, y ${Math.round(result.recentBounds.minY)}-${Math.round(result.recentBounds.maxY)} (dashed box in the image).`,
+      ]
+    : [];
+
+  return [followUpPrompt(pass, maxPasses, result.stats), ...boundsLine].join("\n");
 }
 
 export function summarizeStats(stats: CanvasStats) {

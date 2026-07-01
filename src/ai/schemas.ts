@@ -9,20 +9,9 @@ export function chatDrawStrokesTool() {
     function: {
       name: "draw_strokes",
       description:
-        "Draw native vector marks using normalized 0-1000 canvas coordinates. Supports strokes, lines, curves, ellipses, rectangles, dots, hatching, highlights, smudges, and stars. The app applies the marks and returns updated full/crop/diff images as the tool result.",
+        "Draw native vector marks using normalized 0-1000 canvas coordinates. Supports strokes, lines, curves, ellipses, rectangles, dots, hatching, highlights, smudges, and stars. The app applies the marks and returns the updated canvas image as the tool result.",
       parameters: drawStrokesParameters(),
     },
-  };
-}
-
-export function responsesDrawStrokesTool() {
-  return {
-    type: "function",
-    name: "draw_strokes",
-    description:
-      "Draw native vector marks using normalized 0-1000 canvas coordinates. Supports strokes, lines, curves, ellipses, rectangles, dots, hatching, highlights, smudges, and stars. The app applies the marks and returns updated full/crop/diff images as the tool result.",
-    parameters: drawStrokesParameters(),
-    strict: true,
   };
 }
 
@@ -121,8 +110,6 @@ export function buildDrawingToolOutput(result: DrawingToolResult) {
   return {
     type: "updated_image",
     updated_image: "attached as the next full current canvas image",
-    focus_crop_image: "attached as the next zoomed focus crop image",
-    diff_crop_image: "attached as the next hot-pink latest-mark diff crop image",
     pass: result.pass,
     applied_mark_count: result.appliedMarkCount,
     canvas: {
@@ -134,12 +121,10 @@ export function buildDrawingToolOutput(result: DrawingToolResult) {
         height: CANVAS_HEIGHT,
       },
     },
-    focus_crop: result.focusBounds,
     recent_change_bounds: result.recentBounds,
     feedback_notes: [
-      "updated_image is the full grid-stamped current canvas",
-      "focus_crop_image zooms into the latest edit area with normalized bounds in its label",
-      "diff_crop_image repeats the latest tool marks in hot pink so placement can be checked",
+      "updated_image is the full grid-stamped current canvas after your marks",
+      "the dashed box marks the area you just edited",
     ],
     stats: summarizeStats(result.stats),
   };

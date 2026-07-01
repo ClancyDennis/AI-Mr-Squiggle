@@ -3,23 +3,13 @@ import {
   collaborationInitialPrompt,
   collaborationSystemPrompt,
   finalCollaborationPrompt,
-  responsesToolResultContent,
   summarizeStats,
 } from "./prompts";
-import { buildDrawingToolOutput, chatDrawStrokesTool, responsesDrawStrokesTool } from "./schemas";
+import { buildDrawingToolOutput, chatDrawStrokesTool } from "./schemas";
+import { completionBudget, requestOpenAiJson, requestOpenAiRaw } from "./request";
 import {
-  completionBudget,
-  readResponseId,
-  requestOpenAiJson,
-  requestOpenAiRaw,
-  responsesCompletionBudget,
-} from "./request";
-import {
-  critiqueSchema,
   extractChatMessage,
   extractChatToolCalls,
-  extractModelText,
-  extractResponsesToolCalls,
   getMessageText,
   parseFinalCollaborationCritique,
 } from "./parse";
@@ -41,50 +31,10 @@ export async function requestOpenAiCritique(settings: ApiSettings, imageDataUrl:
     `Canvas stats: ${JSON.stringify(summarizeStats(stats))}`,
   ].join("\n");
 
-  return requestOpenAiJson<Partial<Critique>>(settings, prompt, imageDataUrl, "drawing_critique", critiqueSchema());
+  return requestOpenAiJson<Partial<Critique>>(settings, prompt, imageDataUrl);
 }
 
 export async function requestOpenAiCollaborationToolLoop({
-  settings,
-  initialImageDataUrl,
-  initialStats,
-  maxPasses,
-  seeds,
-  onPassStart,
-  applyDrawingTool,
-}: {
-  settings: ApiSettings;
-  initialImageDataUrl: string;
-  initialStats: CanvasStats;
-  maxPasses: number;
-  seeds: string[];
-  onPassStart: (pass: number) => void;
-  applyDrawingTool: (toolCall: DrawingToolCall, pass: number) => Promise<DrawingToolResult>;
-}): Promise<NativeCollaborationResult> {
-  if (settings.endpointPath.includes("chat/completions")) {
-    return requestChatCompletionsToolLoop({
-      settings,
-      initialImageDataUrl,
-      initialStats,
-      maxPasses,
-      seeds,
-      onPassStart,
-      applyDrawingTool,
-    });
-  }
-
-  return requestResponsesToolLoop({
-    settings,
-    initialImageDataUrl,
-    initialStats,
-    maxPasses,
-    seeds,
-    onPassStart,
-    applyDrawingTool,
-  });
-}
-
-export async function requestChatCompletionsToolLoop({
   settings,
   initialImageDataUrl,
   initialStats,
@@ -186,97 +136,3 @@ export async function requestChatCompletionsToolLoop({
   };
 }
 
-export async function requestResponsesToolLoop({
-  settings,
-  initialImageDataUrl,
-  initialStats,
-  maxPasses,
-  seeds,
-  onPassStart,
-  applyDrawingTool,
-}: {
-  settings: ApiSettings;
-  initialImageDataUrl: string;
-  initialStats: CanvasStats;
-  maxPasses: number;
-  seeds: string[];
-  onPassStart: (pass: number) => void;
-  applyDrawingTool: (toolCall: DrawingToolCall, pass: number) => Promise<DrawingToolResult>;
-}): Promise<NativeCollaborationResult> {
-  let previousResponseId: string | undefined;
-  let input: Array<Record<string, unknown>> = [
-    {
-      role: "user",
-      content: [
-        { type: "input_text", text: collaborationInitialPrompt(initialStats, maxPasses, seeds) },
-        { type: "input_image", image_url: initialImageDataUrl },
-      ],
-    },
-  ];
-  let appliedMarkCount = 0;
-  let note = "The native tool loop finished without adding marks.";
-
-  for (let pass = 1; pass <= maxPasses; pass += 1) {
-    onPassStart(pass);
-    const response = await requestOpenAiRaw(settings, {
-      model: settings.model.trim(),
-      instructions: collaborationSystemPrompt(),
-      temperature: 0.58,
-      ...responsesCompletionBudget(settings, 2200),
-      input,
-      previous_response_id: previousResponseId,
-      tools: [responsesDrawStrokesTool()],
-      tool_choice: "auto",
-    });
-    previousResponseId = readResponseId(response) ?? previousResponseId;
-
-    const toolCalls = extractResponsesToolCalls(response);
-    if (!toolCalls.length) {
-      return {
-        appliedMarkCount,
-        note,
-        critique: parseFinalCollaborationCritique(extractModelText(response)),
-      };
-    }
-
-    const nextInput: Array<Record<string, unknown>> = [];
-
-    for (const toolCall of toolCalls) {
-      if (toolCall.name !== "draw_strokes") continue;
-
-      const result = await applyDrawingTool(toolCall, pass);
-      appliedMarkCount += result.appliedMarkCount;
-      note = toolCall.arguments.intent || toolCall.arguments.note || note;
-
-      nextInput.push({
-        type: "function_call_output",
-        call_id: toolCall.id,
-        output: JSON.stringify(buildDrawingToolOutput(result)),
-      });
-      nextInput.push({
-        role: "user",
-        content: responsesToolResultContent(pass, maxPasses, result),
-      });
-    }
-
-    input = nextInput;
-  }
-
-  const finalResponse = await requestOpenAiRaw(settings, {
-    model: settings.model.trim(),
-    instructions: collaborationSystemPrompt(),
-    temperature: 0.45,
-    ...responsesCompletionBudget(settings, 1400),
-    input:
-      input.length > 0
-        ? input
-        : [{ role: "user", content: [{ type: "input_text", text: finalCollaborationPrompt() }] }],
-    previous_response_id: previousResponseId,
-  });
-
-  return {
-    appliedMarkCount,
-    note,
-    critique: parseFinalCollaborationCritique(extractModelText(finalResponse)),
-  };
-}

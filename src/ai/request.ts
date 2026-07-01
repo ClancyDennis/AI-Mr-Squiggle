@@ -1,15 +1,13 @@
 import { normalizeMaxCompletionTokens } from "./settings";
-import { asRecord, extractModelText, parseJsonFromText } from "./parse";
+import { extractModelText, parseJsonFromText } from "./parse";
 import type { ApiSettings } from "../types";
 
 export async function requestOpenAiJson<T>(
   settings: ApiSettings,
   prompt: string,
   imageDataUrl: string,
-  schemaName: string,
-  schema: Record<string, unknown>,
 ): Promise<T> {
-  const json = await requestOpenAiRaw(settings, buildRequestBody(settings, prompt, imageDataUrl, schemaName, schema));
+  const json = await requestOpenAiRaw(settings, buildRequestBody(settings, prompt, imageDataUrl));
   const text = extractModelText(json);
   return parseJsonFromText(text) as T;
 }
@@ -27,11 +25,6 @@ export async function requestOpenAiRaw(settings: ApiSettings, body: Record<strin
   }
 
   return (await response.json()) as unknown;
-}
-
-export function readResponseId(response: unknown) {
-  const record = asRecord(response);
-  return typeof record?.id === "string" ? record.id : undefined;
 }
 
 export function buildEndpoint(settings: ApiSettings) {
@@ -67,21 +60,6 @@ export function completionBudget(settings: ApiSettings, tokenBudget: number): Re
   };
 }
 
-export function responsesCompletionBudget(settings: ApiSettings, tokenBudget: number): Record<string, unknown> {
-  const budget = completionTokenBudget(settings, tokenBudget);
-
-  if (usesReasoningBudget(settings.model)) {
-    return {
-      max_output_tokens: budget,
-      reasoning: { effort: reasoningEffortForSettings(settings) },
-    };
-  }
-
-  return {
-    max_output_tokens: budget,
-  };
-}
-
 export function completionTokenBudget(settings: ApiSettings, fallbackTokenBudget: number) {
   return normalizeMaxCompletionTokens(settings.maxCompletionTokens, fallbackTokenBudget);
 }
@@ -107,57 +85,24 @@ export function reasoningEffortForSettings(settings: ApiSettings) {
     : settings.reasoningEffort;
 }
 
-export function buildRequestBody(
-  settings: ApiSettings,
-  prompt: string,
-  imageDataUrl: string,
-  schemaName: string,
-  schema: Record<string, unknown>,
-) {
+export function buildRequestBody(settings: ApiSettings, prompt: string, imageDataUrl: string) {
   const systemPrompt =
     "You are DrawAssistant, a concise AI art critic and drawing collaborator. Return valid JSON only.";
-  const isChatCompletions = settings.endpointPath.includes("chat/completions");
-
-  if (isChatCompletions) {
-    return {
-      model: settings.model.trim(),
-      temperature: 0.78,
-      ...completionBudget(settings, 1600),
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: systemPrompt },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            { type: "image_url", image_url: { url: imageDataUrl } },
-          ],
-        },
-      ],
-    };
-  }
 
   return {
     model: settings.model.trim(),
-    instructions: systemPrompt,
     temperature: 0.78,
-    ...responsesCompletionBudget(settings, 1600),
-    input: [
+    ...completionBudget(settings, 1600),
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: systemPrompt },
       {
         role: "user",
         content: [
-          { type: "input_text", text: prompt },
-          { type: "input_image", image_url: imageDataUrl },
+          { type: "text", text: prompt },
+          { type: "image_url", image_url: { url: imageDataUrl } },
         ],
       },
     ],
-    text: {
-      format: {
-        type: "json_schema",
-        name: schemaName,
-        strict: true,
-        schema,
-      },
-    },
   };
 }

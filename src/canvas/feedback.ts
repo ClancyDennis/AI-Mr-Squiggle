@@ -1,35 +1,20 @@
 import { CANVAS_WIDTH, CANVAS_HEIGHT } from "../lib/canvas-size";
 import { clamp } from "../lib/coordinates";
-import { expandNormalizedBounds, fullNormalizedBounds, normalizedBoundsToCanvasRect } from "../lib/bounds";
+import { normalizedBoundsToCanvasRect } from "../lib/bounds";
 import { drawCoordinateGrid } from "./grid";
-import { drawCollaborationMarks } from "./marks";
-import type { CanvasFeedbackImages, CollaborationMark, NormalizedBounds } from "../types";
+import type { CanvasFeedbackImages, NormalizedBounds } from "../types";
 
+// The model's feedback after each pass is just the full updated canvas (grid-stamped,
+// with a box around the latest edit). We no longer send zoomed focus/diff crops.
 export async function buildCanvasFeedbackImages(
   canvas: HTMLCanvasElement,
   backgroundColor: string,
-  marks: CollaborationMark[],
   recentBounds: NormalizedBounds | null,
 ): Promise<CanvasFeedbackImages> {
-  const focusBounds = expandNormalizedBounds(recentBounds ?? fullNormalizedBounds(), 90, 240);
   const updatedCanvas = createFeedbackCanvas(canvas, backgroundColor, recentBounds, "last tool area");
-  const diffCanvas = createFeedbackCanvas(canvas, backgroundColor, recentBounds, "last tool area");
-  const diffContext = diffCanvas.getContext("2d");
-
-  if (diffContext) {
-    await drawCollaborationMarks(diffContext, marks, {
-      overrideColor: "#ff4fa3",
-      alphaScale: 1.15,
-      pressureResponse: 70,
-    });
-    drawFeedbackLabel(diffContext, "hot pink ghost = latest AI marks", 12, CANVAS_HEIGHT - 38);
-  }
 
   return {
     updatedImageDataUrl: updatedCanvas.toDataURL("image/png"),
-    focusCropDataUrl: createCropDataUrl(updatedCanvas, focusBounds, "focus crop"),
-    diffCropDataUrl: createCropDataUrl(diffCanvas, focusBounds, "latest marks"),
-    focusBounds,
     recentBounds,
   };
 }
@@ -57,38 +42,6 @@ export function createFeedbackCanvas(
   }
 
   return exportCanvas;
-}
-
-export function createCropDataUrl(sourceCanvas: HTMLCanvasElement, bounds: NormalizedBounds, label: string) {
-  const rect = normalizedBoundsToCanvasRect(bounds);
-  const maxOutputSize = 720;
-  const minOutputSize = 360;
-  const largestSide = Math.max(rect.width, rect.height);
-  const smallestSide = Math.min(rect.width, rect.height);
-  const scale = Math.min(2, maxOutputSize / largestSide);
-  const minScale = smallestSide > 0 ? Math.min(2, minOutputSize / smallestSide) : scale;
-  const outputScale = Math.max(scale, minScale);
-  const outputWidth = Math.round(clamp(rect.width * outputScale, 1, maxOutputSize));
-  const outputHeight = Math.round(clamp(rect.height * outputScale, 1, maxOutputSize));
-  const cropCanvas = document.createElement("canvas");
-  cropCanvas.width = outputWidth;
-  cropCanvas.height = outputHeight;
-  const cropContext = cropCanvas.getContext("2d");
-
-  if (!cropContext) return sourceCanvas.toDataURL("image/png");
-
-  cropContext.drawImage(sourceCanvas, rect.x, rect.y, rect.width, rect.height, 0, 0, outputWidth, outputHeight);
-  cropContext.strokeStyle = "rgba(255, 79, 163, 0.92)";
-  cropContext.lineWidth = 4;
-  cropContext.strokeRect(2, 2, outputWidth - 4, outputHeight - 4);
-  drawFeedbackLabel(
-    cropContext,
-    `${label}: x ${Math.round(bounds.minX)}-${Math.round(bounds.maxX)} / y ${Math.round(bounds.minY)}-${Math.round(bounds.maxY)}`,
-    12,
-    12,
-  );
-
-  return cropCanvas.toDataURL("image/png");
 }
 
 export function drawNormalizedBoundsOverlay(ctx: CanvasRenderingContext2D, bounds: NormalizedBounds, label: string) {

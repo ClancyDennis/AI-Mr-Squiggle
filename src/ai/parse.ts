@@ -43,24 +43,6 @@ export function extractChatToolCalls(message: Record<string, unknown>): DrawingT
     .filter((toolCall): toolCall is DrawingToolCall => Boolean(toolCall));
 }
 
-export function extractResponsesToolCalls(response: unknown): DrawingToolCall[] {
-  const record = asRecord(response);
-  const output = Array.isArray(record?.output) ? record.output : [];
-
-  return output
-    .map((rawItem, index) => {
-      const item = asRecord(rawItem);
-      if (!item || item.type !== "function_call" || item.name !== "draw_strokes") return null;
-
-      return {
-        id: safeString(item.call_id ?? item.id, `draw_strokes_${index}`, 80),
-        name: "draw_strokes" as const,
-        arguments: sanitizeDrawingToolArguments(parseToolArguments(item.arguments)),
-      };
-    })
-    .filter((toolCall): toolCall is DrawingToolCall => Boolean(toolCall));
-}
-
 export function parseToolArguments(value: unknown): unknown {
   if (typeof value === "string") {
     return parseJsonFromText(value);
@@ -256,21 +238,6 @@ export function sanitizeMarkKind(value: unknown, fallback: CollaborationMarkKind
 
 export function sanitizeDrawingTool(value: unknown): DrawingTool {
   return value === "pencil" || value === "brush" || value === "marker" ? value : "pencil";
-}
-
-export function critiqueSchema(): Record<string, unknown> {
-  return {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      headline: { type: "string" },
-      body: { type: "string" },
-      coverage: { type: "string" },
-      composition: { type: "string" },
-      palette: { type: "string" },
-    },
-    required: ["headline", "body", "coverage", "composition", "palette"],
-  };
 }
 
 export function asRecord(value: unknown): Record<string, unknown> | null {
