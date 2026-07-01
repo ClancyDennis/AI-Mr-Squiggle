@@ -1123,6 +1123,15 @@ function App() {
                   type="button"
                 />
               ))}
+              <label className="swatch custom-swatch" style={{ backgroundColor: ink }} title="Custom ink color">
+                <input
+                  aria-label="Custom ink color"
+                  onChange={(event) => setInk(event.target.value)}
+                  type="color"
+                  value={/^#[0-9a-f]{6}$/i.test(ink) ? ink : "#64d8c8"}
+                />
+                <Palette aria-hidden="true" size={14} />
+              </label>
             </div>
           </div>
 
