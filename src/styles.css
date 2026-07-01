@@ -1622,3 +1622,20 @@ canvas {
   opacity: 0;
   cursor: pointer;
 }
+
+/* --- Collaboration Stop button ------------------------------------------- */
+
+.secondary-action.stop-action {
+  color: #b3261e;
+}
+
+.secondary-action.stop-action svg {
+  color: #b3261e;
+}
+
+@media (prefers-color-scheme: dark) {
+  .secondary-action.stop-action,
+  .secondary-action.stop-action svg {
+    color: #ff8a80;
+  }
+}

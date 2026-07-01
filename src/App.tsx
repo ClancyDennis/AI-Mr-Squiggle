@@ -78,6 +78,7 @@ import {
 import { buildAuthUrl, createPkce, exchangeCodeForKey } from "./openrouter";
 import { getStoredApiKey, setStoredApiKey } from "./secureStorage";
 import { isNative, onDeepLink, openExternal, readClipboardText } from "./native";
+import { AUTOSAVE_DEBOUNCE_MS, loadAutosave, saveAutosave } from "./lib/autosave";
 
 function errorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
@@ -98,6 +99,9 @@ function App() {
   const currentStrokesRef = useRef<CapturedStroke[]>([]);
   const vectorHistoryRef = useRef<CapturedStroke[][]>([[]]);
   const activeStrokeRef = useRef<CapturedStroke | null>(null);
+  const collaborationAbortRef = useRef<AbortController | null>(null);
+  const autosaveTimerRef = useRef<number | null>(null);
+  const autosaveReadyRef = useRef(false);
 
   const [canvasSize, setCanvasSize] = useState<CanvasSize>(() => currentCanvasSize());
   const [tool, setTool] = useState<Tool>("pencil");
@@ -418,13 +422,37 @@ function App() {
 
     resizeCanvasSurface(getViewportCanvasSize(), false);
 
-    const snapshot = canvas.toDataURL("image/png");
-    historyRef.current = [snapshot];
-    historyIndexRef.current = 0;
-    vectorHistoryRef.current = [[]];
-    currentStrokesRef.current = [];
-    setHistory([snapshot]);
-    setHistoryIndex(0);
+    const seedHistoryFromCanvas = () => {
+      const snapshot = canvasRef.current?.toDataURL("image/png");
+      if (!snapshot) return;
+      historyRef.current = [snapshot];
+      historyIndexRef.current = 0;
+      vectorHistoryRef.current = [[]];
+      currentStrokesRef.current = [];
+      setHistory([snapshot]);
+      setHistoryIndex(0);
+      autosaveReadyRef.current = true;
+    };
+
+    // Restore the last canvas (raster) if one was autosaved.
+    const autosave = loadAutosave();
+    if (autosave) {
+      setBackground(autosave.background);
+      const ctx = getContext();
+      const image = new Image();
+      image.onload = () => {
+        if (ctx) {
+          ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+          ctx.drawImage(image, 0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+        }
+        seedHistoryFromCanvas();
+        addActivity("Restored last canvas");
+      };
+      image.onerror = seedHistoryFromCanvas;
+      image.src = autosave.imageDataUrl;
+    } else {
+      seedHistoryFromCanvas();
+    }
 
     let resizeFrame = 0;
     const handleResize = () => {
@@ -439,8 +467,23 @@ function App() {
     return () => {
       window.cancelAnimationFrame(resizeFrame);
       window.removeEventListener("resize", handleResize);
+      if (autosaveTimerRef.current !== null) {
+        window.clearTimeout(autosaveTimerRef.current);
+      }
     };
-  }, [resizeCanvasSurface]);
+  }, [addActivity, getContext, resizeCanvasSurface]);
+
+  // Debounced autosave: persist the live canvas whenever history or background changes.
+  useEffect(() => {
+    if (!autosaveReadyRef.current) return;
+    if (autosaveTimerRef.current !== null) window.clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = window.setTimeout(() => {
+      autosaveTimerRef.current = null;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      saveAutosave({ imageDataUrl: canvas.toDataURL("image/png"), background });
+    }, AUTOSAVE_DEBOUNCE_MS);
+  }, [history, background]);
 
   const pointFromEvent = useCallback((event: ReactPointerEvent<HTMLCanvasElement>): StrokePoint => {
     return sampleFromPointerEvent(event.nativeEvent, event.currentTarget);
@@ -763,6 +806,12 @@ function App() {
     }
   }, [addActivity, analyzeCanvas, apiConfigured, apiSettings, getFlattenedCanvasDataUrl, isThinking]);
 
+  const stopCollaboration = useCallback(() => {
+    if (!collaborationAbortRef.current) return;
+    collaborationAbortRef.current.abort(new Error("Collaboration stopped"));
+    addActivity("Stopping collaboration");
+  }, [addActivity]);
+
   const collaborate = useCallback(async () => {
     if (isCollaborating) return;
 
@@ -779,6 +828,9 @@ function App() {
       setIsCollaborating(false);
       return;
     }
+
+    const abortController = new AbortController();
+    collaborationAbortRef.current = abortController;
 
     const stats = analyzeCanvas();
 
@@ -804,6 +856,7 @@ function App() {
             maxPasses: collaborationPasses,
             seeds,
             useVision,
+            signal: abortController.signal,
             onPassStart: (pass) => {
               setCollaborationStep(pass);
               addActivity(`Tool pass ${pass}`);
@@ -840,20 +893,22 @@ function App() {
           });
           addActivity("Native tool loop complete");
         } catch (error) {
-          console.error("[DrawAssistant] OpenAI collaboration failed:", error);
+          const stopped = abortController.signal.aborted;
+          if (!stopped) console.error("[DrawAssistant] OpenAI collaboration failed:", error);
           if (nativeMarkCount > 0) {
             nativeResult = {
               appliedMarkCount: nativeMarkCount,
               note: nativeNote,
             };
-            addActivity(`OpenAI stopped after tool pass: ${errorMessage(error)}`);
+            addActivity(stopped ? "Collaboration stopped; marks kept" : `OpenAI stopped after tool pass: ${errorMessage(error)}`);
           } else {
-            addActivity(`OpenAI failed: ${errorMessage(error)}`);
+            addActivity(stopped ? "Collaboration stopped" : `OpenAI failed: ${errorMessage(error)}`);
           }
         }
       }
 
-      if (!nativeResult?.appliedMarkCount) {
+      // Don't fall back to local scribbles when the user deliberately stopped.
+      if (!nativeResult?.appliedMarkCount && !abortController.signal.aborted) {
         await drawLocalCollaboration(ctx, stats);
       }
 
@@ -881,6 +936,7 @@ function App() {
         addActivity("Collaboration complete");
       }
     } finally {
+      collaborationAbortRef.current = null;
       setCollaborationStep(0);
       setIsCollaborating(false);
     }
@@ -1304,12 +1360,17 @@ function App() {
               <Bot aria-hidden="true" size={19} />
               {isThinking ? "Reading squiggle" : "Read Squiggle"}
             </button>
-            <button className="secondary-action" disabled={isCollaborating} onClick={collaborate} type="button">
-              <WandSparkles aria-hidden="true" size={19} />
-              {isCollaborating
-                ? `Tool pass ${collaborationStep || 1}/${collaborationPasses}`
-                : "Reveal Drawing"}
-            </button>
+            {isCollaborating ? (
+              <button className="secondary-action stop-action" onClick={stopCollaboration} type="button">
+                <X aria-hidden="true" size={18} />
+                {`Stop · pass ${collaborationStep || 1}/${collaborationPasses}`}
+              </button>
+            ) : (
+              <button className="secondary-action" onClick={collaborate} type="button">
+                <WandSparkles aria-hidden="true" size={19} />
+                Reveal Drawing
+              </button>
+            )}
             <button className="tertiary-action" disabled={isRefining} onClick={refine} type="button">
               <Sparkles aria-hidden="true" size={18} />
               {isRefining ? "Animating…" : "Animate SVG"}

@@ -12,11 +12,16 @@ export async function requestOpenAiJson<T>(
   return parseJsonFromText(text) as T;
 }
 
-export async function requestOpenAiRaw(settings: ApiSettings, body: Record<string, unknown>): Promise<unknown> {
+export async function requestOpenAiRaw(
+  settings: ApiSettings,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<unknown> {
   const response = await fetch(buildEndpoint(settings), {
     method: "POST",
     headers: buildHeaders(settings),
     body: JSON.stringify(body),
+    signal,
   });
 
   if (!response.ok) {

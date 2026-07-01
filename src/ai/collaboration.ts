@@ -71,6 +71,7 @@ export async function requestOpenAiCollaborationToolLoop({
   useVision,
   onPassStart,
   applyDrawingTool,
+  signal,
 }: {
   settings: ApiSettings;
   initialImageDataUrl?: string;
@@ -81,6 +82,7 @@ export async function requestOpenAiCollaborationToolLoop({
   useVision: boolean;
   onPassStart: (pass: number) => void;
   applyDrawingTool: (toolCall: DrawingToolCall, pass: number) => Promise<DrawingToolResult>;
+  signal?: AbortSignal;
 }): Promise<NativeCollaborationResult> {
   const initialText = [
     collaborationInitialPrompt(initialStats, maxPasses, useVision),
@@ -108,14 +110,18 @@ export async function requestOpenAiCollaborationToolLoop({
 
   for (let pass = 1; pass <= maxPasses; pass += 1) {
     onPassStart(pass);
-    const response = await requestOpenAiRaw(settings, {
-      model: settings.model.trim(),
-      ...temperatureParams(settings, 0.58),
-      ...completionBudget(settings, 2200),
-      messages,
-      tools: [chatDrawStrokesTool()],
-      tool_choice: "auto",
-    });
+    const response = await requestOpenAiRaw(
+      settings,
+      {
+        model: settings.model.trim(),
+        ...temperatureParams(settings, 0.58),
+        ...completionBudget(settings, 2200),
+        messages,
+        tools: [chatDrawStrokesTool()],
+        tool_choice: "auto",
+      },
+      signal,
+    );
     const message = extractChatMessage(response);
     const toolCalls = extractChatToolCalls(message);
     messages.push(message);
@@ -153,19 +159,23 @@ export async function requestOpenAiCollaborationToolLoop({
     }
   }
 
-  const finalResponse = await requestOpenAiRaw(settings, {
-    model: settings.model.trim(),
-    ...temperatureParams(settings, 0.45),
-    ...completionBudget(settings, 1400),
-    response_format: { type: "json_object" },
-    messages: [
-      ...messages,
-      {
-        role: "user",
-        content: finalCollaborationPrompt(),
-      },
-    ],
-  });
+  const finalResponse = await requestOpenAiRaw(
+    settings,
+    {
+      model: settings.model.trim(),
+      ...temperatureParams(settings, 0.45),
+      ...completionBudget(settings, 1400),
+      response_format: { type: "json_object" },
+      messages: [
+        ...messages,
+        {
+          role: "user",
+          content: finalCollaborationPrompt(),
+        },
+      ],
+    },
+    signal,
+  );
   const finalMessage = extractChatMessage(finalResponse);
 
   return {
