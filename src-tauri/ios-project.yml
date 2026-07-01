@@ -43,6 +43,11 @@ targets:
         LSRequiresIPhoneOS: true
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]
+        CFBundleURLTypes:
+          - CFBundleURLName: com.drawassistant.mobile
+            CFBundleTypeRole: Editor
+            CFBundleURLSchemes:
+              - drawassistant
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: DrawAssistant connects to your local OpenAI-compatible proxy for drawing collaboration.
