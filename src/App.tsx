@@ -9,12 +9,15 @@ import {
   Palette,
   Pencil,
   Redo2,
+  RotateCcw,
   Server,
   Settings,
+  Share,
   Sparkles,
   Trash2,
   Undo2,
   WandSparkles,
+  X,
 } from "lucide-react";
 import { PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import squiggleMascot from "./assets/squiggle-mascot-512.png";
@@ -115,6 +118,13 @@ type Critique = {
   coverage: string;
   composition: string;
   palette: string;
+};
+
+type ResultNotice = {
+  kind: "critique" | "reveal";
+  label: string;
+  headline: string;
+  body: string;
 };
 
 type ApiSettings = {
@@ -394,6 +404,10 @@ function App() {
   const [gridVisible, setGridVisible] = useState(true);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [resultNotice, setResultNotice] = useState<ResultNotice | null>(null);
+  const [isRefining, setIsRefining] = useState(false);
+  const [refinedSvg, setRefinedSvg] = useState<RefinedSvg | null>(null);
+  const [svgReplayNonce, setSvgReplayNonce] = useState(0);
   const [cursorPoint, setCursorPoint] = useState<Point | null>(null);
   const [collaborationPasses, setCollaborationPasses] = useState(3);
   const [collaborationStep, setCollaborationStep] = useState(0);
@@ -556,6 +570,7 @@ function App() {
   );
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    setResultNotice(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     const point = pointFromEvent(event);
     setCursorPoint(point);
@@ -680,6 +695,7 @@ function App() {
   const clearCanvas = useCallback(() => {
     clearMarks();
     commitHistory();
+    setResultNotice(null);
     setCritique(
       buildCritique({
         coverage: 0,
@@ -706,27 +722,76 @@ function App() {
     addActivity("Redo");
   }, [addActivity, canRedo, restoreSnapshot]);
 
-  const saveImage = useCallback(() => {
+  const buildExportBlob = useCallback(async (): Promise<Blob | null> => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) return null;
 
     const exportCanvas = document.createElement("canvas");
     exportCanvas.width = CANVAS_WIDTH;
     exportCanvas.height = CANVAS_HEIGHT;
 
     const exportContext = exportCanvas.getContext("2d");
-    if (!exportContext) return;
+    if (!exportContext) return null;
 
     exportContext.fillStyle = background;
     exportContext.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
     exportContext.drawImage(canvas, 0, 0);
 
+    return new Promise((resolve) => {
+      exportCanvas.toBlob((blob) => resolve(blob), "image/png");
+    });
+  }, [background]);
+
+  const downloadBlob = useCallback((blob: Blob) => {
+    const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    link.download = "drawassistant-canvas.png";
-    link.href = exportCanvas.toDataURL("image/png");
+    link.download = "mr-squiggle.png";
+    link.href = url;
     link.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const saveImage = useCallback(async () => {
+    const blob = await buildExportBlob();
+    if (!blob) return;
+    downloadBlob(blob);
     addActivity("PNG exported");
-  }, [addActivity, background]);
+  }, [addActivity, buildExportBlob, downloadBlob]);
+
+  // Native share sheet on iPad/iOS (AirDrop, Messages, Save to Photos…), with a
+  // PNG download fallback wherever file sharing isn't available.
+  const shareImage = useCallback(async () => {
+    const blob = await buildExportBlob();
+    if (!blob) return;
+
+    const file = new File([blob], "mr-squiggle.png", { type: "image/png" });
+    const shareNavigator = navigator as Navigator & {
+      canShare?: (data?: ShareData) => boolean;
+    };
+
+    if (
+      typeof shareNavigator.share === "function" &&
+      shareNavigator.canShare?.({ files: [file] })
+    ) {
+      try {
+        await shareNavigator.share({
+          files: [file],
+          title: "AI Mr Squiggle",
+          text: "Made with AI Mr Squiggle",
+        });
+        addActivity("Drawing shared");
+        return;
+      } catch (error) {
+        if ((error as DOMException)?.name === "AbortError") {
+          return; // user dismissed the share sheet
+        }
+        // anything else: fall through to download
+      }
+    }
+
+    downloadBlob(blob);
+    addActivity("PNG exported");
+  }, [addActivity, buildExportBlob, downloadBlob]);
 
   const getFlattenedCanvasDataUrl = useCallback(
     (options?: { includeGrid?: boolean }) => {
@@ -756,6 +821,7 @@ function App() {
   const requestCritique = useCallback(async () => {
     if (isThinking) return;
 
+    setResultNotice(null);
     setIsThinking(true);
     const stats = analyzeCanvas();
 
@@ -766,10 +832,24 @@ function App() {
       }
 
       const remoteCritique = await requestOpenAiCritique(apiSettings, imageDataUrl, stats);
-      setCritique(sanitizeCritique(remoteCritique, stats));
+      const nextCritique = sanitizeCritique(remoteCritique, stats);
+      setCritique(nextCritique);
+      setResultNotice({
+        kind: "critique",
+        label: "Critic",
+        headline: nextCritique.headline,
+        body: nextCritique.body,
+      });
       addActivity("OpenAI critique complete");
     } catch (error) {
-      setCritique(buildCritique(stats));
+      const nextCritique = buildCritique(stats);
+      setCritique(nextCritique);
+      setResultNotice({
+        kind: "critique",
+        label: apiConfigured ? "Local critic" : "Critic",
+        headline: nextCritique.headline,
+        body: nextCritique.body,
+      });
       addActivity(apiConfigured ? "OpenAI unavailable; local critic used" : "Local critic complete");
     } finally {
       setIsThinking(false);
@@ -779,6 +859,7 @@ function App() {
   const collaborate = useCallback(async () => {
     if (isCollaborating) return;
 
+    setResultNotice(null);
     setIsCollaborating(true);
     setCollaborationStep(0);
     addActivity("Collaboration started");
@@ -798,12 +879,15 @@ function App() {
       let nativeNote = "The AI added tool-call marks, but stopped before a final critique.";
 
       if (imageDataUrl && apiConfigured) {
+        const seeds = drawConceptSeeds(3);
+        addActivity(`Concept seeds: ${seeds.join(", ")}`);
         try {
           nativeResult = await requestOpenAiCollaborationToolLoop({
             settings: apiSettings,
             initialImageDataUrl: imageDataUrl,
             initialStats: stats,
             maxPasses: collaborationPasses,
+            seeds,
             onPassStart: (pass) => {
               setCollaborationStep(pass);
               addActivity(`Tool pass ${pass}`);
@@ -861,8 +945,14 @@ function App() {
         : buildCritique(
             nextStats,
             nativeResult?.note ?? "The collaborator added connective tissue and a little gallery lighting.",
-          );
+      );
       setCritique(nextCritique);
+      setResultNotice({
+        kind: "reveal",
+        label: "Reveal complete",
+        headline: nextCritique.headline,
+        body: nextCritique.body,
+      });
       addActivity("Collaboration complete");
     } finally {
       setCollaborationStep(0);
@@ -880,6 +970,78 @@ function App() {
     getFlattenedCanvasDataUrl,
     isCollaborating,
   ]);
+
+  const refine = useCallback(async () => {
+    if (isRefining) return;
+
+    if (!apiConfigured) {
+      setResultNotice({
+        kind: "reveal",
+        label: "Refine needs the API",
+        headline: "Connect a model first",
+        body: "Open API settings and add a vision-capable model to vectorize your sketch into an animated SVG.",
+      });
+      return;
+    }
+
+    setIsRefining(true);
+    addActivity("Refining to animated SVG");
+
+    try {
+      const imageDataUrl = getFlattenedCanvasDataUrl();
+      if (!imageDataUrl) throw new Error("Canvas unavailable");
+
+      const result = await requestOpenAiSvg(apiSettings, imageDataUrl);
+      setRefinedSvg({ ...result, svg: sanitizeSvgMarkup(result.svg) });
+      setSvgReplayNonce((nonce) => nonce + 1);
+      addActivity(`Animated SVG ready: ${result.title}`);
+    } catch (error) {
+      addActivity("SVG refine failed");
+      setResultNotice({
+        kind: "reveal",
+        label: "Refine failed",
+        headline: "Couldn't vectorize that",
+        body:
+          error instanceof Error && error.message
+            ? error.message.slice(0, 160)
+            : "The model didn't return usable SVG. Try again, or add a few more marks first.",
+      });
+    } finally {
+      setIsRefining(false);
+    }
+  }, [addActivity, apiConfigured, apiSettings, getFlattenedCanvasDataUrl, isRefining]);
+
+  const downloadSvg = useCallback(() => {
+    if (!refinedSvg) return;
+    const blob = new Blob([refinedSvg.svg], { type: "image/svg+xml" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.download = "mr-squiggle.svg";
+    link.href = url;
+    link.click();
+    URL.revokeObjectURL(url);
+    addActivity("SVG downloaded");
+  }, [addActivity, refinedSvg]);
+
+  const shareSvg = useCallback(async () => {
+    if (!refinedSvg) return;
+    const file = new File([refinedSvg.svg], "mr-squiggle.svg", { type: "image/svg+xml" });
+    const shareNavigator = navigator as Navigator & {
+      canShare?: (data?: ShareData) => boolean;
+    };
+
+    if (typeof shareNavigator.share === "function" && shareNavigator.canShare?.({ files: [file] })) {
+      try {
+        await shareNavigator.share({ files: [file], title: refinedSvg.title, text: "Made with AI Mr Squiggle" });
+        addActivity("SVG shared");
+        return;
+      } catch (error) {
+        if ((error as DOMException)?.name === "AbortError") return;
+      }
+    }
+
+    downloadSvg();
+  }, [addActivity, downloadSvg, refinedSvg]);
 
   return (
     <main className="app-shell">
@@ -1086,16 +1248,37 @@ function App() {
               <span className="topbar-label">Grid</span>
               <strong>0-1000</strong>
             </div>
-            <button
-              aria-pressed={gridVisible}
-              className={gridVisible ? "grid-toggle active" : "grid-toggle"}
-              onClick={() => setGridVisible((visible) => !visible)}
-              title="Toggle coordinate grid"
-              type="button"
-            >
-              <Grid3x3 aria-hidden="true" size={16} />
-              Grid
-            </button>
+            <div className="topbar-actions">
+              <button
+                aria-pressed={gridVisible}
+                className={gridVisible ? "grid-toggle active" : "grid-toggle"}
+                onClick={() => setGridVisible((visible) => !visible)}
+                title="Toggle coordinate grid"
+                type="button"
+              >
+                <Grid3x3 aria-hidden="true" size={16} />
+                Grid
+              </button>
+              <span className="topbar-divider" aria-hidden="true" />
+              <button
+                aria-label="Clear canvas"
+                className="topbar-action"
+                onClick={clearCanvas}
+                title="Clear canvas"
+                type="button"
+              >
+                <Trash2 aria-hidden="true" size={17} />
+              </button>
+              <button
+                aria-label="Share drawing"
+                className="topbar-action share"
+                onClick={shareImage}
+                title="Share drawing"
+                type="button"
+              >
+                <Share aria-hidden="true" size={17} />
+              </button>
+            </div>
           </div>
 
           <div className={`canvas-frame ${surfaceTone}`}>
@@ -1142,7 +1325,36 @@ function App() {
                 ? `Tool pass ${collaborationStep || 1}/${collaborationPasses}`
                 : "Reveal Drawing"}
             </button>
+            <button className="tertiary-action" disabled={isRefining} onClick={refine} type="button">
+              <Sparkles aria-hidden="true" size={18} />
+              {isRefining ? "Animating…" : "Animate SVG"}
+            </button>
           </div>
+
+          {resultNotice ? (
+            <section className={`result-notice ${resultNotice.kind}`} aria-live="polite" role="status">
+              <div className="result-notice-heading">
+                <span>
+                  {resultNotice.kind === "reveal" ? (
+                    <WandSparkles aria-hidden="true" size={17} />
+                  ) : (
+                    <Sparkles aria-hidden="true" size={17} />
+                  )}
+                  {resultNotice.label}
+                </span>
+                <button
+                  aria-label="Dismiss result"
+                  onClick={() => setResultNotice(null)}
+                  title="Dismiss"
+                  type="button"
+                >
+                  <X aria-hidden="true" size={18} />
+                </button>
+              </div>
+              <h2>{resultNotice.headline}</h2>
+              <p>{resultNotice.body}</p>
+            </section>
+          ) : null}
         </section>
 
         <aside className={inspectorOpen ? "inspector open" : "inspector"} aria-label="AI panel">
@@ -1291,6 +1503,63 @@ function App() {
           </section>
         </aside>
       </section>
+
+      {refinedSvg ? (
+        <div
+          className="svg-stage"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Animated SVG result"
+          onClick={() => setRefinedSvg(null)}
+        >
+          <div className="svg-card" onClick={(event) => event.stopPropagation()}>
+            <div className="svg-card-heading">
+              <span>
+                <Sparkles aria-hidden="true" size={17} />
+                {refinedSvg.title}
+              </span>
+              <button
+                aria-label="Close"
+                onClick={() => setRefinedSvg(null)}
+                title="Close"
+                type="button"
+              >
+                <X aria-hidden="true" size={18} />
+              </button>
+            </div>
+
+            <div className="svg-frame">
+              <iframe
+                key={svgReplayNonce}
+                title={refinedSvg.title}
+                sandbox=""
+                srcDoc={svgPreviewDocument(refinedSvg.svg)}
+              />
+            </div>
+
+            {refinedSvg.summary ? <p className="svg-summary">{refinedSvg.summary}</p> : null}
+
+            <div className="svg-actions">
+              <button
+                className="svg-action"
+                onClick={() => setSvgReplayNonce((nonce) => nonce + 1)}
+                type="button"
+              >
+                <RotateCcw aria-hidden="true" size={17} />
+                Replay
+              </button>
+              <button className="svg-action" onClick={downloadSvg} type="button">
+                <Download aria-hidden="true" size={17} />
+                Download
+              </button>
+              <button className="svg-action share" onClick={shareSvg} type="button">
+                <Share aria-hidden="true" size={17} />
+                Share
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }
@@ -1414,7 +1683,7 @@ function drawCoordinateGrid(ctx: CanvasRenderingContext2D, backgroundColor: stri
     ctx.stroke();
   });
 
-  ctx.font = "700 18px Inter, ui-sans-serif, system-ui, sans-serif";
+  ctx.font = "600 18px system-ui, -apple-system, ui-sans-serif, sans-serif";
   ctx.textBaseline = "top";
   ctx.lineJoin = "round";
 
@@ -2179,7 +2448,7 @@ function drawNormalizedBoundsOverlay(ctx: CanvasRenderingContext2D, bounds: Norm
 
 function drawFeedbackLabel(ctx: CanvasRenderingContext2D, label: string, x: number, y: number) {
   ctx.save();
-  ctx.font = "800 16px Inter, ui-sans-serif, system-ui, sans-serif";
+  ctx.font = "600 16px system-ui, -apple-system, ui-sans-serif, sans-serif";
   const width = ctx.measureText(label).width;
   ctx.fillStyle = "rgba(22, 18, 20, 0.82)";
   ctx.beginPath();
@@ -2299,6 +2568,7 @@ async function requestOpenAiCollaborationToolLoop({
   initialImageDataUrl,
   initialStats,
   maxPasses,
+  seeds,
   onPassStart,
   applyDrawingTool,
 }: {
@@ -2306,6 +2576,7 @@ async function requestOpenAiCollaborationToolLoop({
   initialImageDataUrl: string;
   initialStats: CanvasStats;
   maxPasses: number;
+  seeds: string[];
   onPassStart: (pass: number) => void;
   applyDrawingTool: (toolCall: DrawingToolCall, pass: number) => Promise<DrawingToolResult>;
 }): Promise<NativeCollaborationResult> {
@@ -2315,6 +2586,7 @@ async function requestOpenAiCollaborationToolLoop({
       initialImageDataUrl,
       initialStats,
       maxPasses,
+      seeds,
       onPassStart,
       applyDrawingTool,
     });
@@ -2325,6 +2597,7 @@ async function requestOpenAiCollaborationToolLoop({
     initialImageDataUrl,
     initialStats,
     maxPasses,
+    seeds,
     onPassStart,
     applyDrawingTool,
   });
@@ -2335,6 +2608,7 @@ async function requestChatCompletionsToolLoop({
   initialImageDataUrl,
   initialStats,
   maxPasses,
+  seeds,
   onPassStart,
   applyDrawingTool,
 }: {
@@ -2342,6 +2616,7 @@ async function requestChatCompletionsToolLoop({
   initialImageDataUrl: string;
   initialStats: CanvasStats;
   maxPasses: number;
+  seeds: string[];
   onPassStart: (pass: number) => void;
   applyDrawingTool: (toolCall: DrawingToolCall, pass: number) => Promise<DrawingToolResult>;
 }): Promise<NativeCollaborationResult> {
@@ -2353,7 +2628,7 @@ async function requestChatCompletionsToolLoop({
     {
       role: "user",
       content: [
-        { type: "text", text: collaborationInitialPrompt(initialStats, maxPasses) },
+        { type: "text", text: collaborationInitialPrompt(initialStats, maxPasses, seeds) },
         { type: "image_url", image_url: { url: initialImageDataUrl } },
       ],
     },
@@ -2435,6 +2710,7 @@ async function requestResponsesToolLoop({
   initialImageDataUrl,
   initialStats,
   maxPasses,
+  seeds,
   onPassStart,
   applyDrawingTool,
 }: {
@@ -2442,6 +2718,7 @@ async function requestResponsesToolLoop({
   initialImageDataUrl: string;
   initialStats: CanvasStats;
   maxPasses: number;
+  seeds: string[];
   onPassStart: (pass: number) => void;
   applyDrawingTool: (toolCall: DrawingToolCall, pass: number) => Promise<DrawingToolResult>;
 }): Promise<NativeCollaborationResult> {
@@ -2450,7 +2727,7 @@ async function requestResponsesToolLoop({
     {
       role: "user",
       content: [
-        { type: "input_text", text: collaborationInitialPrompt(initialStats, maxPasses) },
+        { type: "input_text", text: collaborationInitialPrompt(initialStats, maxPasses, seeds) },
         { type: "input_image", image_url: initialImageDataUrl },
       ],
     },
@@ -2550,11 +2827,224 @@ async function requestOpenAiRaw(settings: ApiSettings, body: Record<string, unkn
   return (await response.json()) as unknown;
 }
 
+type RefinedSvg = {
+  svg: string;
+  title: string;
+  summary: string;
+};
+
+// Ask the model to redraw the canvas as a single, self-contained, animated SVG.
+// Reuses the existing image-in / text-out plumbing; the only differences from the
+// critique path are a vector-focused system prompt and a roomier token budget.
+async function requestOpenAiSvg(settings: ApiSettings, imageDataUrl: string): Promise<RefinedSvg> {
+  const json = await requestOpenAiRaw(settings, buildSvgRequestBody(settings, imageDataUrl));
+  const parsed = asRecord(parseJsonFromText(extractModelText(json)));
+  const svg = typeof parsed?.svg === "string" ? parsed.svg : "";
+
+  if (!/<svg[\s\S]*<\/svg>/i.test(svg)) {
+    throw new Error("Model did not return SVG markup");
+  }
+
+  return {
+    svg,
+    title: typeof parsed?.title === "string" && parsed.title.trim() ? parsed.title.trim() : "Refined sketch",
+    summary: typeof parsed?.summary === "string" ? parsed.summary.trim() : "",
+  };
+}
+
+function buildSvgRequestBody(settings: ApiSettings, imageDataUrl: string) {
+  const isChatCompletions = settings.endpointPath.includes("chat/completions");
+  // Give SVG room to breathe even if the user's slider is low, without overriding a
+  // higher manual setting.
+  const svgSettings: ApiSettings = {
+    ...settings,
+    maxCompletionTokens: Math.min(MAX_COMPLETION_TOKENS, Math.max(5000, settings.maxCompletionTokens)),
+  };
+
+  if (isChatCompletions) {
+    return {
+      model: settings.model.trim(),
+      temperature: 0.6,
+      ...completionBudget(svgSettings, 5000),
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: svgSystemPrompt() },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: svgUserPrompt() },
+            { type: "image_url", image_url: { url: imageDataUrl } },
+          ],
+        },
+      ],
+    };
+  }
+
+  return {
+    model: settings.model.trim(),
+    instructions: svgSystemPrompt(),
+    temperature: 0.6,
+    ...responsesCompletionBudget(svgSettings, 5000),
+    input: [
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: svgUserPrompt() },
+          { type: "input_image", image_url: imageDataUrl },
+        ],
+      },
+    ],
+    text: {
+      format: {
+        type: "json_schema",
+        name: "refined_svg",
+        strict: true,
+        schema: refineSvgSchema(),
+      },
+    },
+  };
+}
+
+function svgSystemPrompt() {
+  return "You are DrawAssistant's vector studio. You turn rough sketches into clean, charming, animated SVG illustrations. Return valid JSON only.";
+}
+
+function svgUserPrompt() {
+  return [
+    "Here is a hand-drawn sketch. Redraw it as one refined, self-contained, animated SVG that captures what the sketch wants to be: cleaner and more characterful than the original, but clearly the same idea and composition.",
+    "Hard requirements for the svg string:",
+    '- Root must be <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"> with NO width or height attributes.',
+    "- Fully self-contained: inline shapes, paths, and gradients only, plus a single inline <style> block.",
+    "- Forbidden: <script>, <foreignObject>, <image>, <use>, any on* event handlers, and any external URL, font, or href (internal #id references for gradients/filters are fine).",
+    "- Animate it. Put CSS @keyframes in the <style> block and/or use SMIL <animate>/<animateTransform>. Begin with a 'draw-on' reveal (animate stroke-dashoffset from the full path length down to 0 on the main outlines), then settle into a gentle looping idle motion such as a bob, sway, pulse, blink, or sparkle.",
+    "- Keep it tasteful and light: aim for fewer than ~40 elements and a loop of about 4-8 seconds. Reuse the sketch's colors where it makes sense.",
+    "Respond with JSON only in the shape { \"title\": string, \"summary\": string, \"svg\": string }. title is 2-4 words. summary is one playful sentence under 120 characters. svg is the complete <svg>...</svg> markup.",
+  ].join("\n");
+}
+
+function refineSvgSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      title: { type: "string" },
+      summary: { type: "string" },
+      svg: { type: "string" },
+    },
+    required: ["title", "summary", "svg"],
+  };
+}
+
+// Defense in depth: even though we render the SVG inside a locked-down sandboxed
+// iframe (no scripts, CSP default-src 'none'), strip the obvious injection vectors
+// before it ever touches the DOM.
+function sanitizeSvgMarkup(raw: string): string {
+  const match = raw.match(/<svg[\s\S]*<\/svg>/i);
+  let svg = match ? match[0] : raw;
+
+  svg = svg
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, "")
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, "")
+    .replace(/\son\w+\s*=\s*'[^']*'/gi, "")
+    // Drop external references but keep internal "#id" refs (gradients, filters).
+    .replace(/\s(?:xlink:)?href\s*=\s*"(?!#)[^"]*"/gi, "")
+    .replace(/\s(?:xlink:)?href\s*=\s*'(?!#)[^']*'/gi, "");
+
+  return svg;
+}
+
+function svgPreviewDocument(svg: string): string {
+  return [
+    "<!doctype html><html><head><meta charset=\"utf-8\">",
+    '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:;">',
+    "<style>html,body{margin:0;height:100%}body{display:grid;place-items:center;background:transparent;overflow:hidden}svg{max-width:100%;max-height:100%;width:auto;height:auto;display:block}</style>",
+    "</head><body>",
+    svg,
+    "</body></html>",
+  ].join("");
+}
+
+// Concept-seed theory (github.com/ClancyDennis/concept-seed): LLMs are comically
+// bad at being random or diverse on their own, so they mode-collapse onto a favorite
+// reading of an open-ended prompt (here: "everything is a whale"). The fix is to
+// externalize the randomness — draw a concrete real-world word from outside the model
+// and inject it into the *user* message as a plot twist. The word is the seed; we pick
+// it with a crypto RNG (the os.urandom analog) instead of asking the model to choose.
+const CONCEPT_SEED_WORDS = [
+  // objects & contraptions
+  "lantern", "umbrella", "teapot", "anchor", "compass", "telescope", "accordion",
+  "typewriter", "hourglass", "kettle", "lighthouse", "windmill", "mailbox", "kite",
+  "ladder", "wheelbarrow", "sundial", "periscope", "gramophone", "chandelier",
+  "birdcage", "harmonica", "kaleidoscope", "weathervane", "pinwheel", "clockwork",
+  "fountain", "carousel", "dreamcatcher", "marionette",
+  // vehicles
+  "submarine", "tractor", "gondola", "rocket", "biplane", "tugboat", "unicycle",
+  "zeppelin", "locomotive", "sailboat", "hot-air balloon",
+  // nature & landscape
+  "volcano", "waterfall", "glacier", "canyon", "cactus", "mushroom", "coral",
+  "geyser", "tumbleweed", "iceberg", "whirlpool", "meteor", "aurora", "fjord",
+  "sand dune", "hot spring",
+  // weather
+  "thundercloud", "snowflake", "tornado", "rainbow", "monsoon",
+  // food
+  "pretzel", "cupcake", "pineapple", "croissant", "noodle", "lollipop", "artichoke",
+  "dumpling", "popsicle", "gumball",
+  // architecture
+  "pagoda", "drawbridge", "aqueduct", "igloo", "treehouse", "observatory",
+  "ferris wheel", "totem", "obelisk", "greenhouse",
+  // music & art
+  "cello", "bagpipe", "xylophone", "tambourine", "easel", "metronome", "megaphone",
+  "origami",
+  // mythical & fantastical
+  "dragon", "golem", "phoenix", "mermaid", "gargoyle", "robot", "alien", "wizard",
+  "knight", "jester", "scarecrow", "yeti", "kraken",
+  // characters & professions
+  "astronaut", "deep-sea diver", "beekeeper", "chef", "conductor", "lighthouse keeper",
+  // abstract & physical concepts
+  "gravity", "nostalgia", "momentum", "symmetry", "echo", "labyrinth", "eclipse",
+  "vertigo", "mirage",
+  // creatures (kept a deliberate minority, none whale-shaped)
+  "platypus", "narwhal", "axolotl", "pangolin", "chameleon", "octopus", "hedgehog",
+  "flamingo", "seahorse", "beetle", "jellyfish", "snail", "peacock", "walrus",
+  "sloth", "toucan", "hummingbird",
+];
+
+// Pick `count` distinct seeds using crypto randomness so the choice comes from
+// outside any model's probability distribution (concept-seed's core requirement).
+function drawConceptSeeds(count: number): string[] {
+  const total = CONCEPT_SEED_WORDS.length;
+  const wanted = Math.min(count, total);
+  const picked = new Set<number>();
+
+  const randomIndex = () => {
+    if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+      // Rejection-sample to avoid modulo bias against an unbiased index.
+      const limit = Math.floor(0xffffffff / total) * total;
+      const buf = new Uint32Array(1);
+      let value = limit;
+      while (value >= limit) {
+        crypto.getRandomValues(buf);
+        value = buf[0];
+      }
+      return value % total;
+    }
+    return Math.floor(Math.random() * total);
+  };
+
+  while (picked.size < wanted) {
+    picked.add(randomIndex());
+  }
+
+  return Array.from(picked, (index) => CONCEPT_SEED_WORDS[index]);
+}
+
 function collaborationSystemPrompt() {
   return [
     "You are DrawAssistant, a playful AI Mr Squiggle-style drawing collaborator.",
     "Your job is to discover what the user's squiggle could become, then add a few charming marks that reveal that hidden character, object, creature, scene, or joke.",
     "Be whimsical, warm, and lightly theatrical, but keep the drawing help concrete and visually useful.",
+    "Range widely across all of object, contraption, vehicle, plant, place, food, and abstract-idea territory — do not default to the same go-to animal every time. You will be handed external creative seeds in the user message; treat them as binding inspiration, not suggestions.",
     "You have one native tool: draw_strokes. It can draw freehand strokes plus higher-level native marks: line, curve, ellipse, rectangle, dot, hatch, highlight, smudge, and star.",
     "After each draw_strokes call, the tool result is followed by three vision inputs: updated_image, focus_crop_image, and diff_crop_image. The focus crop is zoomed to the latest edit area. The diff crop repeats your latest marks in hot pink so you can correct placement.",
     "Inspect the updated image, focus crop, and diff crop before deciding whether another draw_strokes call is needed.",
@@ -2569,9 +3059,19 @@ function collaborationSystemPrompt() {
   ].join("\n");
 }
 
-function collaborationInitialPrompt(stats: CanvasStats, maxPasses: number) {
+function collaborationInitialPrompt(stats: CanvasStats, maxPasses: number, seeds: string[] = []) {
+  const seedLines = seeds.length
+    ? [
+        `Creative seeds (drawn at random from outside your instincts, not chosen by you): ${seeds.join(", ")}.`,
+        "These are real-world concepts injected as a plot twist. Before you settle on the obvious reading, let each one collide with the squiggle's actual shape.",
+        "Pick the ONE seed the squiggle can most surprisingly become — or fuse two of them — and commit to revealing that. Do not ignore the seeds, and do not retreat to a generic animal (especially not a whale).",
+        "The chosen seed guides WHAT you reveal; the squiggle's real contours guide WHERE you draw. Honor both.",
+      ]
+    : [];
+
   return [
     "Turn this squiggle into something delightful through native tool calls.",
+    ...seedLines,
     "The image includes a translucent coordinate grid and edge labels. The grid is only a placement guide; do not treat it as artwork.",
     "Use normalized coordinates only: origin (0,0) is the upper-left inside the canvas, x increases right to 1000, and y increases down to 1000.",
     "Quick placement examples: center is (500,500), upper-right is near (850,150), lower-left is near (150,850).",
