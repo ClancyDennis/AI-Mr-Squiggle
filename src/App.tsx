@@ -574,8 +574,8 @@ function App() {
       let nativeNote = "The AI added tool-call marks, but stopped before a final critique.";
 
       if (imageDataUrl && apiConfigured) {
-        const seeds = drawConceptSeeds(3);
-        addActivity(`Concept seeds: ${seeds.join(", ")}`);
+        const seeds = drawConceptSeeds();
+        addActivity(`Inspiration: ${seeds.join(", ")}`);
         try {
           nativeResult = await requestOpenAiCollaborationToolLoop({
             settings: apiSettings,

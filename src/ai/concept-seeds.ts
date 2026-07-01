@@ -1,9 +1,12 @@
 // Concept-seed theory (github.com/ClancyDennis/concept-seed): LLMs are comically
 // bad at being random or diverse on their own, so they mode-collapse onto a favorite
 // reading of an open-ended prompt (here: "everything is a whale"). The fix is to
-// externalize the randomness — draw a concrete real-world word from outside the model
-// and inject it into the *user* message as a plot twist. The word is the seed; we pick
-// it with a crypto RNG (the os.urandom analog) instead of asking the model to choose.
+// externalize the randomness — draw words the model did NOT choose and drop them in as
+// a gentle "inspiration:" line. The words are arbitrary on purpose: they are not
+// thematic guidance, just an unpredictable nudge that throws the model off its default
+// path. A broad, mixed vocabulary (objects, moods, actions, abstractions — anything)
+// works precisely because it's unpredictable. Each is picked with a crypto RNG (the
+// os.urandom analog) instead of asking the model to choose.
 export const CONCEPT_SEED_WORDS = [
   // objects & contraptions
   "lantern", "umbrella", "teapot", "anchor", "compass", "telescope", "accordion",
@@ -41,11 +44,21 @@ export const CONCEPT_SEED_WORDS = [
   "platypus", "narwhal", "axolotl", "pangolin", "chameleon", "octopus", "hedgehog",
   "flamingo", "seahorse", "beetle", "jellyfish", "snail", "peacock", "walrus",
   "sloth", "toucan", "hummingbird",
+  // moods
+  "wistful", "giddy", "smug", "serene", "mischievous", "melancholy", "triumphant",
+  "cozy", "anxious", "dreamy", "bashful", "defiant", "tender", "grumpy", "hopeful",
+  "playful", "solemn", "curious", "restless", "bewildered", "brave", "electric",
+  "whimsical", "fierce", "smitten",
+  // actions & energies
+  "tumbling", "sprouting", "balancing", "unraveling", "drifting", "colliding",
+  "blooming", "teetering", "spiraling", "hatching", "melting", "leaping", "stretching",
+  "floating", "tiptoeing", "spinning", "wobbling", "erupting", "gliding", "crumbling",
+  "swirling", "climbing", "peeking", "toppling",
 ];
 
 // Pick `count` distinct seeds using crypto randomness so the choice comes from
 // outside any model's probability distribution (concept-seed's core requirement).
-export function drawConceptSeeds(count: number): string[] {
+export function drawConceptSeeds(count = 3): string[] {
   const total = CONCEPT_SEED_WORDS.length;
   const wanted = Math.min(count, total);
   const picked = new Set<number>();
