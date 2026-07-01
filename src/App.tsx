@@ -1128,8 +1128,8 @@ function App() {
                   <X aria-hidden="true" size={18} />
                 </button>
               </div>
-              <h2>What do you think it is?</h2>
-              <p>Mr Squiggle finished the drawing. Guess what it became, then see if you matched.</p>
+              <h2>What do you think we drew? :)</h2>
+              <p>We finished the drawing together. Guess what it became, then see if you matched.</p>
               <form
                 className="guess-form"
                 onSubmit={(event) => {
