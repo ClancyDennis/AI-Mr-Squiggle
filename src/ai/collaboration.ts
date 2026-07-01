@@ -8,10 +8,12 @@ import {
 import { buildDrawingToolOutput, chatDrawStrokesTool } from "./schemas";
 import { completionBudget, requestOpenAiJson, requestOpenAiRaw } from "./request";
 import {
+  asRecord,
   extractChatMessage,
   extractChatToolCalls,
   getMessageText,
   parseFinalCollaborationCritique,
+  safeString,
 } from "./parse";
 import type {
   ApiSettings,
@@ -32,6 +34,31 @@ export async function requestOpenAiCritique(settings: ApiSettings, imageDataUrl:
   ].join("\n");
 
   return requestOpenAiJson<Partial<Critique>>(settings, prompt, imageDataUrl);
+}
+
+// After the reveal, the human guesses what the drawing became. This judges the guess
+// against what the AI actually drew and returns a playful verdict for the comparison card.
+export async function requestGuessVerdict(
+  settings: ApiSettings,
+  imageDataUrl: string,
+  aiAnswer: string,
+  guess: string,
+): Promise<{ match: boolean; verdict: string }> {
+  const prompt = [
+    "This finished drawing was just revealed by an AI drawing partner.",
+    `The AI's own description of what it drew: "${aiAnswer}".`,
+    `A human then guessed what the drawing is: "${guess}".`,
+    "Decide whether the guess essentially matches what the AI drew — the same thing or a clearly related reading counts as a match.",
+    'Return JSON only: { "match": boolean, "verdict": string }.',
+    "verdict is one or two warm, playful sentences (under 160 characters) telling the human whether they nailed it and naming what it actually was.",
+  ].join("\n");
+
+  const raw = asRecord(await requestOpenAiJson<unknown>(settings, prompt, imageDataUrl));
+
+  return {
+    match: typeof raw?.match === "boolean" ? raw.match : false,
+    verdict: safeString(raw?.verdict, "A creative read — let's call it a win.", 200),
+  };
 }
 
 export async function requestOpenAiCollaborationToolLoop({

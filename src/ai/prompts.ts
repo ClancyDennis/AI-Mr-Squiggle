@@ -33,14 +33,14 @@ export function collaborationInitialPrompt(stats: CanvasStats, maxPasses: number
     "Use normalized coordinates only: origin (0,0) is the upper-left inside the canvas, x increases right to 1000, and y increases down to 1000.",
     "Quick placement examples: center is (500,500), upper-right is near (850,150), lower-left is near (150,850).",
     `Major vertical labels are x=${GRID_X_LABELS.join(", ")}. Major horizontal labels are y=${GRID_Y_LABELS.join(", ")}. Minor grid spacing is ${NORMALIZED_MINOR_GRID_SIZE} normalized units.`,
-    `The actual rendered image may be any iPad size; ignore its pixel dimensions and place strokes by the 0-1000 grid labels.`,
+    `The actual rendered image may be any iPad size; ignore its pixel dimensions and place strokes by the 0-1000 grid labels corresponsing to the fractional length of the image.`,
     `You may call draw_strokes up to ${maxPasses} time${maxPasses === 1 ? "" : "s"}. Each tool result is the updated image for the next decision.`,
     "Use draw_strokes for one focused playful reveal at a time. Prefer 1 to 3 marks per call, and keep widths modest so the marks stay clean rather than heavy.",
     "Each mark must include kind, tool, color, width, alpha, fill, rotation, spacing, and points. For irrelevant fill/rotation/spacing values use fill=false, rotation=0, spacing=24.",
     "Set each mark tool to pencil, brush, or marker. Match the user's hand: sketchy lines should get pencil, bold colorful additions can use brush, translucent accents can use marker.",
     "Mark point semantics: stroke/curve use a path through all points; line uses the first two points; ellipse/rectangle/hatch use first two points as opposing box corners; dot/star use first point as center and second as radius; highlight/smudge use a path through points.",
-    "Each pass should have a simple visual intent: for example add eyes, turn a line into a nose, make a hat, connect a body, add ground, or add a tiny comic detail.",
-    "Place marks near the existing drawing unless the composition clearly asks for empty-space support. Avoid drifting into unrelated blank areas.",
+    "Each pass should contirbute to your final picture.",
+    "Be creative and create a fun frendly sketch to animate at the end.",
     `Canvas stats: ${JSON.stringify(summarizeStats(stats))}`,
   ].join("\n");
 }

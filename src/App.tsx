@@ -62,7 +62,7 @@ import { isApiConfigured, loadApiSettings, normalizeMaxCompletionTokens, normali
 import { buildCritique } from "./ai/critique";
 import { drawConceptSeeds } from "./ai/concept-seeds";
 import { sanitizeCritique } from "./ai/parse";
-import { requestOpenAiCollaborationToolLoop, requestOpenAiCritique } from "./ai/collaboration";
+import { requestGuessVerdict, requestOpenAiCollaborationToolLoop, requestOpenAiCritique } from "./ai/collaboration";
 import { requestOpenAiSvg, sanitizeSvgMarkup, svgPreviewDocument } from "./ai/svg";
 
 function App() {
@@ -107,6 +107,16 @@ function App() {
   const [collaborationPasses, setCollaborationPasses] = useState(3);
   const [collaborationStep, setCollaborationStep] = useState(0);
   const [apiSettings, setApiSettings] = useState<ApiSettings>(() => loadApiSettings());
+  const [guessPrompt, setGuessPrompt] = useState<{ headline: string; body: string } | null>(null);
+  const [guessText, setGuessText] = useState("");
+  const [isJudging, setIsJudging] = useState(false);
+  const [guessOutcome, setGuessOutcome] = useState<{
+    guess: string;
+    aiHeadline: string;
+    aiBody: string;
+    verdict: string;
+    match: boolean;
+  } | null>(null);
 
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < history.length - 1;
@@ -555,6 +565,9 @@ function App() {
     if (isCollaborating) return;
 
     setResultNotice(null);
+    setGuessPrompt(null);
+    setGuessOutcome(null);
+    setGuessText("");
     setIsCollaborating(true);
     setCollaborationStep(0);
     addActivity("Collaboration started");
@@ -639,13 +652,19 @@ function App() {
             nativeResult?.note ?? "The collaborator added connective tissue and a little gallery lighting.",
       );
       setCritique(nextCritique);
-      setResultNotice({
-        kind: "reveal",
-        label: "Reveal complete",
-        headline: nextCritique.headline,
-        body: nextCritique.body,
-      });
-      addActivity("Collaboration complete");
+      if (apiConfigured) {
+        // Hold the AI's answer and let the user guess first; the reveal is on the canvas.
+        setGuessPrompt({ headline: nextCritique.headline, body: nextCritique.body });
+        addActivity("Reveal complete — take a guess");
+      } else {
+        setResultNotice({
+          kind: "reveal",
+          label: "Reveal complete",
+          headline: nextCritique.headline,
+          body: nextCritique.body,
+        });
+        addActivity("Collaboration complete");
+      }
     } finally {
       setCollaborationStep(0);
       setIsCollaborating(false);
@@ -662,6 +681,53 @@ function App() {
     getFlattenedCanvasDataUrl,
     isCollaborating,
   ]);
+
+  const submitGuess = useCallback(async () => {
+    if (!guessPrompt || isJudging) return;
+    const guess = guessText.trim();
+    if (!guess) return;
+
+    setIsJudging(true);
+    const aiAnswer = [guessPrompt.headline, guessPrompt.body].filter(Boolean).join(". ");
+
+    try {
+      const imageDataUrl = getFlattenedCanvasDataUrl();
+      let verdict = "Nice guess! Connect a model to have Mr Squiggle judge it.";
+      let match = false;
+
+      if (imageDataUrl && apiConfigured) {
+        const result = await requestGuessVerdict(apiSettings, imageDataUrl, aiAnswer, guess);
+        verdict = result.verdict;
+        match = result.match;
+      }
+
+      setGuessOutcome({ guess, aiHeadline: guessPrompt.headline, aiBody: guessPrompt.body, verdict, match });
+      setGuessPrompt(null);
+      addActivity(match ? "Guess matched the reveal" : "Guess compared");
+    } catch (error) {
+      setGuessOutcome({
+        guess,
+        aiHeadline: guessPrompt.headline,
+        aiBody: guessPrompt.body,
+        verdict: "Couldn't reach the judge, but that's a fun guess.",
+        match: false,
+      });
+      setGuessPrompt(null);
+    } finally {
+      setIsJudging(false);
+    }
+  }, [addActivity, apiConfigured, apiSettings, getFlattenedCanvasDataUrl, guessPrompt, guessText, isJudging]);
+
+  const skipGuess = useCallback(() => {
+    if (!guessPrompt) return;
+    setResultNotice({
+      kind: "reveal",
+      label: "Reveal complete",
+      headline: guessPrompt.headline,
+      body: guessPrompt.body,
+    });
+    setGuessPrompt(null);
+  }, [guessPrompt]);
 
   const refine = useCallback(async () => {
     if (isRefining) return;
@@ -1048,6 +1114,69 @@ function App() {
               </div>
               <h2>{resultNotice.headline}</h2>
               <p>{resultNotice.body}</p>
+            </section>
+          ) : null}
+
+          {guessPrompt ? (
+            <section className="result-notice reveal guess-prompt" aria-live="polite">
+              <div className="result-notice-heading">
+                <span>
+                  <WandSparkles aria-hidden="true" size={17} />
+                  Your turn
+                </span>
+                <button aria-label="Skip guessing" onClick={skipGuess} title="Skip" type="button">
+                  <X aria-hidden="true" size={18} />
+                </button>
+              </div>
+              <h2>What do you think it is?</h2>
+              <p>Mr Squiggle finished the drawing. Guess what it became, then see if you matched.</p>
+              <form
+                className="guess-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void submitGuess();
+                }}
+              >
+                <input
+                  aria-label="Your guess"
+                  autoFocus
+                  disabled={isJudging}
+                  onChange={(event) => setGuessText(event.target.value)}
+                  placeholder="e.g. a grumpy teapot"
+                  type="text"
+                  value={guessText}
+                />
+                <button disabled={isJudging || !guessText.trim()} type="submit">
+                  {isJudging ? "Comparing…" : "Compare"}
+                </button>
+              </form>
+            </section>
+          ) : null}
+
+          {guessOutcome ? (
+            <section
+              className={`result-notice ${guessOutcome.match ? "reveal" : "critique"} guess-outcome`}
+              aria-live="polite"
+              role="status"
+            >
+              <div className="result-notice-heading">
+                <span>
+                  <Sparkles aria-hidden="true" size={17} />
+                  {guessOutcome.match ? "You nailed it!" : "Guess vs Mr Squiggle"}
+                </span>
+                <button aria-label="Dismiss result" onClick={() => setGuessOutcome(null)} title="Dismiss" type="button">
+                  <X aria-hidden="true" size={18} />
+                </button>
+              </div>
+              <p className="guess-line">
+                <span className="guess-label">You saw</span>
+                {guessOutcome.guess}
+              </p>
+              <p className="guess-line">
+                <span className="guess-label">Mr Squiggle</span>
+                {guessOutcome.aiHeadline}
+              </p>
+              <p>{guessOutcome.verdict}</p>
             </section>
           ) : null}
         </section>

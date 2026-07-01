@@ -1124,6 +1124,68 @@ canvas {
   line-height: 1.45;
 }
 
+.guess-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.guess-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 13px;
+  font: inherit;
+  color: var(--label);
+  background: var(--field-bg);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-control);
+  outline: none;
+}
+
+.guess-form input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.guess-form button {
+  flex: 0 0 auto;
+  padding: 10px 16px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--on-accent);
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.guess-form button:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+
+.guess-form button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.guess-outcome .guess-line {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 6px;
+  color: var(--label);
+}
+
+.guess-outcome .guess-label {
+  flex: 0 0 auto;
+  min-width: 84px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--label-3);
+}
+
 @keyframes result-pop {
   from {
     opacity: 0;

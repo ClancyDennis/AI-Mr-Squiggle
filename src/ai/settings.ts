@@ -27,9 +27,9 @@ export function loadApiSettings(): ApiSettings {
   const defaults: ApiSettings = {
     baseUrl: import.meta.env.VITE_OPENAI_BASE_URL || "",
     apiKey: import.meta.env.VITE_OPENAI_API_KEY || "",
-    model: import.meta.env.VITE_OPENAI_MODEL || "gpt-4o-mini",
+    model: import.meta.env.VITE_OPENAI_MODEL || "gpt-5.5",
     endpointPath: import.meta.env.VITE_OPENAI_ENDPOINT_PATH || "chat/completions",
-    reasoningEffort: normalizeReasoningEffort(import.meta.env.VITE_OPENAI_REASONING_EFFORT),
+    reasoningEffort: normalizeReasoningEffort(import.meta.env.VITE_OPENAI_REASONING_EFFORT ?? "medium"),
     maxCompletionTokens: normalizeMaxCompletionTokens(import.meta.env.VITE_OPENAI_MAX_COMPLETION_TOKENS),
   };
 
