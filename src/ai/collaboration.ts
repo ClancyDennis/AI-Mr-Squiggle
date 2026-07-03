@@ -22,6 +22,7 @@ import type {
   Critique,
   DrawingToolResult,
   NativeCollaborationResult,
+  SquiggleCommitment,
 } from "../types";
 
 export async function requestOpenAiCritique(settings: ApiSettings, imageDataUrl: string, stats: CanvasStats) {
@@ -68,6 +69,8 @@ export async function requestOpenAiCollaborationToolLoop({
   initialStats,
   maxPasses,
   seeds,
+  gestalt,
+  commitment,
   useVision,
   onPassStart,
   applyDrawingTool,
@@ -79,13 +82,15 @@ export async function requestOpenAiCollaborationToolLoop({
   initialStats: CanvasStats;
   maxPasses: number;
   seeds: string[];
+  gestalt?: string;
+  commitment?: SquiggleCommitment | null;
   useVision: boolean;
   onPassStart: (pass: number) => void;
   applyDrawingTool: (toolCall: DrawingToolCall, pass: number) => Promise<DrawingToolResult>;
   signal?: AbortSignal;
 }): Promise<NativeCollaborationResult> {
   const initialText = [
-    collaborationInitialPrompt(initialStats, maxPasses, useVision),
+    collaborationInitialPrompt(initialStats, maxPasses, useVision, gestalt, commitment ?? null),
     "",
     "Current canvas (SVG, 0-1000):",
     initialCanvasText,

@@ -6,6 +6,8 @@ The canvas includes a toggleable normalized coordinate grid. Collaboration uses 
 
 The drawing tool now accepts native marks as well as freehand paths: `stroke`, `line`, `curve`, `ellipse`, `rectangle`, `dot`, `hatch`, `highlight`, `smudge`, and `star`. After every tool call the model receives the full updated image, a focused crop around the latest edit, and a hot-pink diff crop that repeats the newest AI marks so it can correct placement on the next pass.
 
+For small text-only local models (vision off), the app computes a plain-language gestalt of the user's strokes ("a large wavy line running to the right from (100,500) to (890,550)") since tiny models can't spatially parse SVG paths. A separate high-temperature ideation call lists several things the squiggle could become, the app picks one with crypto randomness (avoiding the last ten revealed subjects, remembered in localStorage), and the drawing loop gets a single concrete commitment: finish it as *that*, with the person's line as a named part of it. Vision models keep the softer concept-seed spark words instead.
+
 ## OpenAI proxy setup
 
 Copy `.env.example` to `.env.local` and fill in your proxy details:
