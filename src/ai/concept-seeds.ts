@@ -56,30 +56,33 @@ export const CONCEPT_SEED_WORDS = [
   "swirling", "climbing", "peeking", "toppling",
 ];
 
-// Pick `count` distinct seeds using crypto randomness so the choice comes from
-// outside any model's probability distribution (concept-seed's core requirement).
+// Crypto-random index so the choice comes from outside any model's probability
+// distribution (concept-seed's core requirement). Also reused by the ideation
+// picker, which selects among model-proposed squiggle subjects in code.
+export function secureRandomIndex(total: number): number {
+  if (total <= 1) return 0;
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+    // Rejection-sample to avoid modulo bias against an unbiased index.
+    const limit = Math.floor(0xffffffff / total) * total;
+    const buf = new Uint32Array(1);
+    let value = limit;
+    while (value >= limit) {
+      crypto.getRandomValues(buf);
+      value = buf[0];
+    }
+    return value % total;
+  }
+  return Math.floor(Math.random() * total);
+}
+
+// Pick `count` distinct seeds.
 export function drawConceptSeeds(count = 3): string[] {
   const total = CONCEPT_SEED_WORDS.length;
   const wanted = Math.min(count, total);
   const picked = new Set<number>();
 
-  const randomIndex = () => {
-    if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-      // Rejection-sample to avoid modulo bias against an unbiased index.
-      const limit = Math.floor(0xffffffff / total) * total;
-      const buf = new Uint32Array(1);
-      let value = limit;
-      while (value >= limit) {
-        crypto.getRandomValues(buf);
-        value = buf[0];
-      }
-      return value % total;
-    }
-    return Math.floor(Math.random() * total);
-  };
-
   while (picked.size < wanted) {
-    picked.add(randomIndex());
+    picked.add(secureRandomIndex(total));
   }
 
   return Array.from(picked, (index) => CONCEPT_SEED_WORDS[index]);

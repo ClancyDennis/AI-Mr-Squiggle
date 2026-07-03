@@ -68,6 +68,13 @@ export type ApiSettings = {
   useVision: boolean;
 };
 
+// A subject the ideation step committed to before the drawing loop: what the
+// squiggle becomes, and which part of it the person's line turns into.
+export type SquiggleCommitment = {
+  subject: string;
+  part: string;
+};
+
 // A finished freehand stroke captured as vectors (normalized 0-1000 coords) so the
 // canvas can be described to the model as text/SVG, not just a raster image.
 export type CapturedStroke = {

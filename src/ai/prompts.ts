@@ -1,23 +1,27 @@
 import { GRID_X_LABELS, GRID_Y_LABELS, NORMALIZED_MINOR_GRID_SIZE } from "../constants";
 import { normalizeCanvasPoint, normalizedXToModel, normalizedYToModel } from "../lib/coordinates";
-import type { CanvasStats, DrawingToolResult } from "../types";
+import type { CanvasStats, DrawingToolResult, SquiggleCommitment } from "../types";
 
 export function collaborationSystemPrompt(useVision: boolean, seeds: string[] = []) {
   // Spark words live here in the system prompt (background), not in the user message,
   // so they gently nudge variety without strongly steering the specific drawing.
-  const seedLine = seeds.length
-    ? `For a little variety, some random spark words: ${seeds.join(", ")}. Lean on one only if it genuinely fits the squiggle; otherwise ignore them. The squiggle's own shape always leads.`
-    : "";
+  // Vision models only: small local models can't hold a seed loosely — they obsess
+  // over the word and draw it regardless of the squiggle — so the compact path gets
+  // its variety from the separate ideation step instead (see ai/ideation.ts).
+  const seedLine =
+    useVision && seeds.length
+      ? `For a little variety, some random spark words: ${seeds.join(", ")}. Lean on one only if it genuinely fits the squiggle; otherwise ignore them. The squiggle's own shape always leads.`
+      : "";
 
   if (!useVision) {
     // Compact prompt for tiny-context local models (e.g. Apple's on-device ~3B).
     return [
       "You are Mr Squiggle, a playful AI that finishes a person's squiggle into one small, recognizable drawing.",
-      ...(seedLine ? [seedLine] : []),
       "You draw by calling draw_strokes with marks on a 0-1000 grid (x right, y down; center 500,500).",
-      "The canvas is given to you as SVG text. After each draw_strokes call, the tool result is the updated canvas as SVG.",
+      "The canvas is given to you as a text description plus SVG. After each draw_strokes call, the tool result is the updated canvas as SVG.",
+      "Never draw a separate picture beside the squiggle: the person's line must become part of your drawing.",
       "Add only a few clean marks that build ONE clear subject, keep the person's strokes as the star, and stop early once it reads.",
-      "When done, do NOT call a tool. Reply with JSON only: {headline, body, coverage, composition, palette}. Keep body under 120 characters.",
+      "When done, do NOT call a tool. Reply with JSON only: {headline, body, coverage, composition, palette}. The headline names what the squiggle became. Keep body under 120 characters.",
     ].join("\n");
   }
 
@@ -42,18 +46,30 @@ export function collaborationSystemPrompt(useVision: boolean, seeds: string[] = 
   ].join("\n");
 }
 
-export function collaborationInitialPrompt(stats: CanvasStats, maxPasses: number, useVision = true) {
+export function collaborationInitialPrompt(
+  stats: CanvasStats,
+  maxPasses: number,
+  useVision = true,
+  gestalt = "",
+  commitment: SquiggleCommitment | null = null,
+) {
   if (!useVision) {
-    // Compact variant for tiny-context local models. The canvas SVG is appended by the loop.
+    // Compact variant for tiny-context local models. The canvas SVG is appended by the
+    // loop, but a small model can't spatially parse SVG — the computed gestalt line is
+    // its real view of the squiggle, and the committed subject is its one concrete job.
     return [
-      "Finish this squiggle into one clear, friendly drawing.",
+      ...(gestalt ? [gestalt] : []),
+      commitment
+        ? `Finish the squiggle as ${commitment.subject}. The person's line becomes its ${commitment.part}. Every mark you add must help it read as ${commitment.subject}.`
+        : "Decide what the squiggle already looks like, then finish it as that ONE thing.",
       "Coordinates are 0-1000: x=0 left, x=1000 right, y=0 top, y=1000 bottom. Center is 500,500.",
-      `Call draw_strokes up to ${maxPasses} time${maxPasses === 1 ? "" : "s"}, 1-3 small marks each, placed near the existing strokes.`,
+      `Call draw_strokes up to ${maxPasses} time${maxPasses === 1 ? "" : "s"}, 1-3 small marks each, placed touching or right next to the existing strokes.`,
     ].join("\n");
   }
 
   return [
     "Turn this squiggle into something delightful through native tool calls.",
+    ...(gestalt ? [`Stroke summary (computed from the person's actual strokes): ${gestalt}`] : []),
     "The image includes a translucent coordinate grid and edge labels. The grid is only a placement guide; do not treat it as artwork.",
     "Use normalized coordinates only: origin (0,0) is the upper-left inside the canvas, x increases right to 1000, and y increases down to 1000.",
     "Quick placement examples: center is (500,500), upper-right is near (850,150), lower-left is near (150,850).",

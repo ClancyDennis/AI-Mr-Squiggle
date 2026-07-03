@@ -50,6 +50,7 @@ import type {
   Point,
   ResultNotice,
   RefinedSvg,
+  SquiggleCommitment,
   StrokePoint,
   Tool,
 } from "./types";
@@ -65,6 +66,8 @@ import { buildCanvasFeedbackImages } from "./canvas/feedback";
 import { isApiConfigured, loadApiSettings, normalizeMaxCompletionTokens, normalizeReasoningEffort } from "./ai/settings";
 import { buildCritique } from "./ai/critique";
 import { drawConceptSeeds } from "./ai/concept-seeds";
+import { describeSquiggleGestalt } from "./ai/gestalt";
+import { chooseSquiggleSubject } from "./ai/ideation";
 import { sanitizeCritique } from "./ai/parse";
 import { requestGuessVerdict, requestOpenAiCollaborationToolLoop, requestOpenAiCritique } from "./ai/collaboration";
 import { requestOpenAiSvg, sanitizeSvgMarkup, svgPreviewDocument } from "./ai/svg";
@@ -845,8 +848,27 @@ function App() {
       let nativeNote = "The AI added tool-call marks, but stopped before a final critique.";
 
       if (apiConfigured) {
-        const seeds = drawConceptSeeds();
-        addActivity(`Inspiration: ${seeds.join(", ")}`);
+        const gestalt = describeSquiggleGestalt(userStrokes);
+        // Vision models get loose seed words; small text-only models obsess over any
+        // seed, so they instead commit to one squiggle-grounded idea picked in code.
+        let seeds: string[] = [];
+        let commitment: SquiggleCommitment | null = null;
+        if (useVision) {
+          seeds = drawConceptSeeds();
+          addActivity(`Inspiration: ${seeds.join(", ")}`);
+        } else {
+          try {
+            commitment = await chooseSquiggleSubject(apiSettings, gestalt, abortController.signal);
+            // Keep the subject secret in the log so the guessing game isn't spoiled.
+            if (commitment) addActivity("Mr Squiggle spotted something…");
+          } catch (error) {
+            // On failure (or stop) just draw without a committed subject; an aborted
+            // signal makes the tool loop below exit through its own stop handling.
+            if (!abortController.signal.aborted) {
+              console.warn("[DrawAssistant] Subject ideation failed:", error);
+            }
+          }
+        }
         try {
           nativeResult = await requestOpenAiCollaborationToolLoop({
             settings: apiSettings,
@@ -855,6 +877,8 @@ function App() {
             initialStats: stats,
             maxPasses: collaborationPasses,
             seeds,
+            gestalt,
+            commitment,
             useVision,
             signal: abortController.signal,
             onPassStart: (pass) => {
